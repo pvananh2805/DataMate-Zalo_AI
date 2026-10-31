@@ -1,6 +1,6 @@
 # Kiểm thử thủ công DataMate
 
-`questions.jsonl` là file riêng để bạn tự viết câu hỏi. File này được tạo rỗng; không có câu hỏi training, public-test hay private-test được chép vào đây. Mỗi dòng là một JSON object độc lập.
+`questions.jsonl` là file riêng để bạn tự viết câu hỏi. Mỗi dòng là một JSON object độc lập. Thư mục `examples/` chứa bộ demo tổng hợp để xem định dạng; không lấy từ training/public/private test. Các file câu hỏi và kết quả cá nhân ở thư mục gốc bị Git bỏ qua.
 
 ## Cấu trúc câu hỏi
 
@@ -40,6 +40,21 @@ python scripts\run_manual_test.py `
 ```
 
 Mặc định CLI đọc `manual_test/questions.jsonl`, ghi chi tiết vào `manual_test/results.jsonl` và tổng hợp vào `manual_test/report.json`. Có thể truyền `--questions`, `--results`, `--report`, `--rulebook` hoặc `--calendar` để đổi đường dẫn. Không cần bật Internet; model phải có sẵn tại `--model-path`. Backend hiện yêu cầu CUDA, do đó máy CPU-only chưa chạy được inference này.
+
+### Chạy bộ ví dụ tổng hợp
+
+Thư mục `examples/` có 100 câu hỏi và database SQLite tổng hợp 500 dòng. Trên máy đã cài model và CUDA, có thể chạy:
+
+```powershell
+python scripts\run_manual_test.py `
+  --questions manual_test\examples\questions.jsonl `
+  --business-data-root manual_test\examples\business `
+  --model-path "D:\path\to\local-checkpoint" `
+  --results manual_test\results.jsonl `
+  --report manual_test\report.json
+```
+
+`examples\results.jsonl` và `examples\report.json` là kết quả kiểm tra pipeline trước đó bằng planner giả lập theo mẫu câu hỏi, **không phải kết quả do model AI tạo**. Báo cáo 80/80 đúng chỉ xác nhận phép tính trên dữ liệu tổng hợp khớp đáp án tổng hợp; không phải accuracy thực tế của AI. Kết quả mới khi chạy model được ghi ra `manual_test\results.jsonl` và `manual_test\report.json`, vốn bị Git bỏ qua.
 
 Mỗi dòng kết quả có `generated_answer`, `expected_answer`, `prediction_status`, `correctness`, `query_plan`, `evidence`, `execution_trace`, `error`, `error_category` và `elapsed_time` (value theo millisecond). Câu lỗi vẫn được ghi ra kết quả và không bị bỏ qua. Accuracy chỉ tính trên `expected_answer` hợp lệ; `abstain` không được tính đúng và được đếm riêng như evaluator (không tính vào số câu sai trong thống kê reward local).
 

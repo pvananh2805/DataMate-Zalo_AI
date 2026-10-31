@@ -4,3 +4,16 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 config/inference.local.json
+manual_test/*
+!manual_test/README.md
+!manual_test/examples/
+manual_test/examples/*
+!manual_test/examples/README.md
+!manual_test/examples/questions.jsonl
+!manual_test/examples/results.jsonl
+!manual_test/examples/report.json
+!manual_test/examples/business/
+manual_test/examples/business/*
+!manual_test/examples/business/biz_demo/
+manual_test/examples/business/biz_demo/*
+!manual_test/examples/business/biz_demo/sales.sqlite
