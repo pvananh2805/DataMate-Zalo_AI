@@ -9,10 +9,11 @@
 - Không có prediction từ model/planner hoặc annotation QueryPlan để đo độ chính xác; **accuracy chưa đo**, không phải 0%. Các phép tính đã có test fixture không chứng minh hiểu câu hỏi thực tế. Xem `planning/16_SOLVE_FIRST_REPORT.md` để biết chi tiết phân loại, phạm vi test và blocker.
 - Đã sửa lọc khoảng ngày trong `src/datamate/query_executor.py`: hỗ trợ giá trị `date`, `datetime` và chuỗi ISO; tính đúng trọn ngày kết thúc khi inclusive; từ chối giá trị ngày không hợp lệ thay vì so sánh từ vựng.
 - QueryPlan/executor hỗ trợ filter và time range riêng trên từng aggregation để so sánh hai kỳ từ cùng bảng; đã kiểm thử so sánh theo nhóm qua pipeline, serialization và evidence.
+- Đã thêm `TimeBucket` theo ngày/tuần/tháng/quý/năm (tuần bắt đầu thứ Hai), cho phép sắp xếp theo bucket; list series một aggregation xuất các số liệu theo thứ tự kỳ, table giữ cột kỳ rồi các chỉ tiêu. Integration test đi qua SQLite → executor → answer validation → JSONL serializer; evaluator xử lý header bảng time-bucket rỗng.
 - `ratio_percent` và `percent_change` được làm tròn đúng 2 chữ số thập phân theo `ROUND_HALF_UP`, như rulebook training yêu cầu.
-- Test hồi quy cover date/datetime, timestamp cuối ngày, cận kết thúc độc quyền, lỗi định dạng ngày, giảm phần trăm âm và tie-break top-K, so sánh hai kỳ qua pipeline, cũng như trường hợp làm tròn nửa đơn vị.
-- Kiểm chứng sau thay đổi: toàn bộ suite **128 passed**; `compileall` và `git diff --check` thành công. Không mở public test hoặc fine-tune. Mốc được commit `40dc03a` và push lên `origin/master`.
-- Các khoảng trống ưu tiên tiếp: time-bucket theo tháng/tuần/quý, thực thi business rules có test, xử lý câu kỳ không có giao dịch so với kỳ ngoài vùng dữ liệu, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
+- Test hồi quy cover date/datetime, timestamp cuối ngày, cận kết thúc độc quyền, lỗi định dạng ngày, giảm phần trăm âm và tie-break top-K, so sánh hai kỳ, time bucket calendar, list/table output, cũng như bảng rỗng.
+- Kiểm chứng sau thay đổi: toàn bộ suite **137 passed**; `compileall` và `git diff --check` thành công. Không mở public test hoặc fine-tune.
+- Các khoảng trống ưu tiên tiếp: bucket trống và kỳ ngoài vùng dữ liệu, thực thi business rules có test, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
 
 ## Đã triển khai và kiểm chứng
 

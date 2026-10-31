@@ -14,6 +14,7 @@ from .query_plan import (
     Filter,
     Join,
     QueryPlan,
+    TimeBucket,
     TimeRange,
     validate_query_plan,
 )
@@ -111,21 +112,20 @@ def _matches(value: object, condition: Filter) -> bool:
     raise QueryExecutionError(f"Unsupported filter operator: {op}")
 
 
-def _time_matches(value: object, time_range: TimeRange) -> bool:
+def _source_day(value: object) -> date | None:
     if value is None:
-        return False
-
+        return None
     if isinstance(value, datetime):
-        source_day = value.date()
-    elif isinstance(value, date):
-        source_day = value
-    elif isinstance(value, str):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
         text = value.strip()
         try:
-            source_day = date.fromisoformat(text)
+            return date.fromisoformat(text)
         except ValueError:
             try:
-                source_day = datetime.fromisoformat(
+                return datetime.fromisoformat(
                     text.replace("Z", "+00:00")
                 ).date()
             except ValueError as exc:
@@ -137,6 +137,11 @@ def _time_matches(value: object, time_range: TimeRange) -> bool:
             "Time-range source values must be date, datetime, or ISO-8601 text"
         )
 
+
+def _time_matches(value: object, time_range: TimeRange) -> bool:
+    source_day = _source_day(value)
+    if source_day is None:
+        return False
     try:
         start = date.fromisoformat(time_range.start)
         end = date.fromisoformat(time_range.end)
@@ -146,6 +151,27 @@ def _time_matches(value: object, time_range: TimeRange) -> bool:
     if time_range.inclusive_end:
         return start <= source_day <= end
     return start <= source_day < end
+
+
+def _time_bucket(value: object, bucket: TimeBucket) -> str | None:
+    source_day = _source_day(value)
+    if source_day is None:
+        return None
+    if bucket.granularity == "day":
+        return source_day.isoformat()
+    if bucket.granularity == "week":
+        monday = date.fromordinal(source_day.toordinal() - source_day.weekday())
+        return monday.isoformat()
+    if bucket.granularity == "month":
+        return f"{source_day.year:04d}-{source_day.month:02d}"
+    if bucket.granularity == "quarter":
+        quarter = (source_day.month - 1) // 3 + 1
+        return f"{source_day.year:04d}-Q{quarter}"
+    if bucket.granularity == "year":
+        return f"{source_day.year:04d}"
+    raise QueryExecutionError(
+        f"Unsupported time bucket granularity: {bucket.granularity}"
+    )
 
 
 def _to_decimal(value: object, *, alias: str) -> Decimal:
@@ -191,6 +217,7 @@ def _aggregate(
 ) -> tuple[list[dict[str, object]], int]:
     grouped: dict[tuple[object, ...], tuple[tuple[object, ...], list[_AggregateState]]] = {}
     group_refs = plan.group_by
+    time_buckets = plan.time_buckets
 
     for context in rows:
         matched_aggregations = [
@@ -216,7 +243,19 @@ def _aggregate(
         ]
         if plan.aggregations and group_refs and not any(matched_aggregations):
             continue
-        key = tuple(_row_value(context, column_indexes, ref) for ref in group_refs)
+        key = (
+            *(
+                _row_value(context, column_indexes, ref)
+                for ref in group_refs
+            ),
+            *(
+                _time_bucket(
+                    _row_value(context, column_indexes, bucket.column),
+                    bucket,
+                )
+                for bucket in time_buckets
+            ),
+        )
         try:
             if key not in grouped:
                 if len(grouped) >= max_groups:
@@ -265,14 +304,25 @@ def _aggregate(
                         ) from exc
                     state.count += 1
 
-    if not grouped and not group_refs:
+    if not grouped and not group_refs and not time_buckets:
         grouped[()] = ((), [_AggregateState() for _ in plan.aggregations])
 
     output: list[dict[str, object]] = []
     for key, states in grouped.values():
         result = {
-            _column_key(ref): value for ref, value in zip(group_refs, key, strict=True)
+            _column_key(ref): value
+            for ref, value in zip(group_refs, key[: len(group_refs)], strict=True)
         }
+        result.update(
+            {
+                bucket.alias: value
+                for bucket, value in zip(
+                    time_buckets,
+                    key[len(group_refs) :],
+                    strict=True,
+                )
+            }
+        )
         for aggregation, state in zip(plan.aggregations, states, strict=True):
             if aggregation.function == "count":
                 value: object = state.count
@@ -481,7 +531,12 @@ def execute_query_plan(
             filtered_count += 1
             yield context
 
-    if plan.aggregations or plan.calculations or plan.group_by:
+    if (
+        plan.aggregations
+        or plan.calculations
+        or plan.group_by
+        or plan.time_buckets
+    ):
         rows, group_count = _aggregate(
             counted_contexts(), plan, column_indexes, max_groups=max_groups
         )

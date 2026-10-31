@@ -114,9 +114,13 @@ def build_planning_prompt(question: str, context: QuestionContext) -> str:
         "không markdown hay lời "
         "dẫn. Mỗi aggregation có thể có filters/time_range riêng để tính cùng một "
         "chỉ tiêu ở các kỳ khác nhau; không dùng time_range toàn plan để lọc mất "
-        "một kỳ cần so sánh. QueryPlan gồm base_table, joins, selected_columns, filters, group_by, "
+        "một kỳ cần so sánh. Có thể group theo cột thô hoặc time_buckets với "
+        "granularity day/week/month/quarter/year; tuần bắt đầu thứ Hai. QueryPlan "
+        "gồm base_table, joins, selected_columns, filters, group_by, time_buckets, "
         "aggregations, calculations, sort, limit, time_range, business_rules, "
-        "output_type, evidence_requirements, metadata. Bắt đầu JSON ngay sau dòng "
+        "output_type, evidence_requirements, metadata. Với output_type list, đặt "
+        "đối tượng cần liệt kê trong selected_columns; nếu là một chuỗi số liệu "
+        "theo kỳ, dùng đúng một aggregation và sort theo time bucket. Bắt đầu JSON ngay sau dòng "
         "'QueryPlan JSON:'.\n"
         "Ngữ cảnh JSON:\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -192,6 +196,7 @@ def validate_abstention_plan(
             plan.sort,
             plan.limit is not None,
             plan.time_range is not None,
+            plan.time_buckets,
             plan.evidence_requirements,
         )
     ):

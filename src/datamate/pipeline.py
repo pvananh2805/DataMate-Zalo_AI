@@ -66,10 +66,32 @@ def discover_business_schema(business_dir: Path | str) -> BusinessSchema:
     )
 
 
-def _answer_value(result: ExecutionResult, answer_type: str) -> object:
+def _answer_value(
+    result: ExecutionResult,
+    answer_type: str,
+    plan: QueryPlan,
+) -> object:
     if answer_type == "table":
         return list(result.rows)
     if answer_type == "list":
+        if plan.selected_columns:
+            if len(plan.selected_columns) != 1:
+                raise PipelineError("list output requires exactly one selected column")
+            key = (
+                f"{plan.selected_columns[0].table}."
+                f"{plan.selected_columns[0].column}"
+            )
+        elif len(plan.aggregations) == 1 and not plan.calculations:
+            key = plan.aggregations[0].alias
+        else:
+            key = None
+        if key is not None:
+            try:
+                return [row[key] for row in result.rows]
+            except KeyError as exc:
+                raise PipelineError(
+                    f"list output column is unavailable: {key}"
+                ) from exc
         if any(len(row) != 1 for row in result.rows):
             raise PipelineError("list output requires exactly one result column")
         return [next(iter(row.values())) for row in result.rows]
@@ -92,6 +114,7 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
         if aggregation.column is not None
     )
     references.update(item.column for item in plan.filters)
+    references.update(bucket.column for bucket in plan.time_buckets)
     for aggregation in plan.aggregations:
         references.update(item.column for item in aggregation.filters)
         if aggregation.time_range is not None:
@@ -108,18 +131,24 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
     has_time_range = plan.time_range is not None or any(
         aggregation.time_range is not None for aggregation in plan.aggregations
     )
+    has_time_bucket = bool(plan.time_buckets)
     for table in execution.trace.source_tables:
         columns = tuple(
             sorted(ref.column for ref in references if ref.table == table)
         )
+        filter_summary = (
+            f"{filter_count} filters; "
+            f"time_range={'yes' if has_time_range else 'no'}"
+        )
+        if has_time_bucket:
+            filter_summary += "; time_bucket=yes"
         evidence.append(
             Evidence(
                 source_table=table,
                 columns=columns,
                 operation="validated_query_plan",
                 row_count=execution.trace.source_rows.get(table, 0),
-                filter_summary=f"{filter_count} filters; "
-                f"time_range={'yes' if has_time_range else 'no'}",
+                filter_summary=filter_summary,
             )
         )
     return tuple(evidence)
@@ -190,12 +219,12 @@ def execute_business_plan(
             and any(item.function == "count" for item in plan.aggregations)
         )
         value = (
-            _answer_value(execution, plan.output_type)
+            _answer_value(execution, plan.output_type, plan)
             if has_scalar_count or plan.output_type in {"list", "table"}
             else None
         )
     else:
-        value = _answer_value(execution, plan.output_type)
+        value = _answer_value(execution, plan.output_type, plan)
     if value is None:
         no_rows_matched = execution.trace.filtered_rows == 0
         answer = ValidatedAnswer(

@@ -89,7 +89,8 @@ def _table_column_labels(plan: QueryPlan | None) -> dict[str, str] | None:
     )
     keys = [f"{ref.table}.{ref.column}" for ref in references]
     labels = [ref.column for ref in references]
-    aliases = [item.alias for item in plan.aggregations]
+    aliases = [item.alias for item in plan.time_buckets]
+    aliases.extend(item.alias for item in plan.aggregations)
     aliases.extend(item.alias for item in plan.calculations)
     duplicates = {label for label in labels if labels.count(label) > 1}
     labels = [

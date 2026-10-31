@@ -10,6 +10,7 @@ from typing import Literal, Mapping
 
 AggregationKind = Literal["sum", "count", "avg", "min", "max"]
 CalculationKind = Literal["difference", "ratio", "ratio_percent", "percent_change"]
+TimeBucketKind = Literal["day", "week", "month", "quarter", "year"]
 FilterOperator = Literal[
     "eq",
     "ne",
@@ -133,6 +134,13 @@ class TimeRange:
 
 
 @dataclass(frozen=True)
+class TimeBucket:
+    column: ColumnRef
+    granularity: TimeBucketKind
+    alias: str
+
+
+@dataclass(frozen=True)
 class QueryPlan:
     """Declarative plan; it contains no SQL or executable code."""
 
@@ -146,6 +154,7 @@ class QueryPlan:
     sort: tuple[Sort, ...] = ()
     limit: int | None = None
     time_range: TimeRange | None = None
+    time_buckets: tuple[TimeBucket, ...] = ()
     business_rules: tuple[str, ...] = ()
     output_type: AnswerType | None = None
     evidence_requirements: tuple[ColumnRef, ...] = ()
@@ -208,6 +217,16 @@ def validate_query_plan(
         check_column(ref, "selected column")
     for ref in plan.group_by:
         check_column(ref, "group by")
+    bucket_aliases: set[str] = set()
+    for bucket in plan.time_buckets:
+        check_column(bucket.column, f"time bucket {bucket.alias!r}")
+        if bucket.granularity not in {"day", "week", "month", "quarter", "year"}:
+            issues.append(
+                f"unsupported time bucket granularity: {bucket.granularity}"
+            )
+        if not bucket.alias or bucket.alias in bucket_aliases:
+            issues.append(f"time bucket alias is empty or duplicated: {bucket.alias!r}")
+        bucket_aliases.add(bucket.alias)
 
     def check_filter(filter_item: Filter, context: str) -> None:
         check_column(filter_item.column, context)
@@ -258,7 +277,7 @@ def validate_query_plan(
     for filter_item in plan.filters:
         check_filter(filter_item, "filter")
 
-    aliases: set[str] = set()
+    aliases: set[str] = set(bucket_aliases)
     for aggregation in plan.aggregations:
         if aggregation.function not in _AGGREGATIONS:
             issues.append(f"unsupported aggregation: {aggregation.function}")
@@ -297,9 +316,14 @@ def validate_query_plan(
         elif item.key not in aliases:
             issues.append(f"sort references unknown column or aggregation alias: {item.key}")
 
-    if not plan.selected_columns and not plan.aggregations and not plan.group_by:
+    if (
+        not plan.selected_columns
+        and not plan.aggregations
+        and not plan.group_by
+        and not plan.time_buckets
+    ):
         issues.append("plan must select columns, group rows, or aggregate")
-    if plan.aggregations or plan.group_by:
+    if plan.aggregations or plan.group_by or plan.time_buckets:
         for ref in plan.selected_columns:
             if ref not in plan.group_by:
                 issues.append(

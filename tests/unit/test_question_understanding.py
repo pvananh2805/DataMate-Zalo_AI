@@ -61,6 +61,13 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
                 ],
             }
         ],
+        "time_buckets": [
+            {
+                "column": {"table": TABLE, "column": "sold_at"},
+                "granularity": "month",
+                "alias": "month",
+            }
+        ],
         "metadata": {"reason": "monthly total"},
     }
 
@@ -73,6 +80,7 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert aggregation.time_range is not None
     assert aggregation.time_range.start == "2025-12-01"
     assert aggregation.filters[0].value == "completed"
+    assert plan.time_buckets[0].granularity == "month"
     assert plan.metadata["reason"] == "monthly total"
 
 

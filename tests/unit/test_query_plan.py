@@ -9,6 +9,7 @@ from datamate.query_plan import (
     PlanValidationError,
     QueryPlan,
     Sort,
+    TimeBucket,
     TimeRange,
     validate_query_plan,
 )
@@ -147,6 +148,30 @@ def test_plan_validates_scoped_aggregation_filters_and_dates() -> None:
         for issue in error.value.issues
     )
     assert any("start must not be after end" in issue for issue in error.value.issues)
+
+
+def test_plan_rejects_unknown_time_bucket_columns_and_granularities() -> None:
+    orders = "orders.csv::orders"
+    plan = QueryPlan(
+        base_table=orders,
+        time_buckets=(
+            TimeBucket(
+                ColumnRef(orders, "missing_date"),
+                "fortnight",
+                "period",
+            ),
+        ),
+        aggregations=(Aggregation("count", None, "rows"),),
+    )
+
+    with pytest.raises(PlanValidationError) as error:
+        validate_query_plan(plan, CATALOG)
+
+    assert any("unknown column" in issue for issue in error.value.issues)
+    assert any(
+        "unsupported time bucket granularity" in issue
+        for issue in error.value.issues
+    )
 
 
 def test_plan_rejects_unsafe_literals_non_iso_dates_and_boolean_limits() -> None:

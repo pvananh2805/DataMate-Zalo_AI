@@ -261,11 +261,12 @@ def _plan_table_columns(plan: object) -> list[str]:
         return []
     aggregations = plan.get("aggregations", [])
     calculations = plan.get("calculations", [])
+    time_buckets = plan.get("time_buckets", [])
     group_by = plan.get("group_by", [])
     selected = plan.get("selected_columns", [])
     if not all(
         isinstance(items, list)
-        for items in (aggregations, calculations, group_by, selected)
+        for items in (aggregations, calculations, time_buckets, group_by, selected)
     ):
         return []
     references = (
@@ -282,7 +283,7 @@ def _plan_table_columns(plan: object) -> list[str]:
     ]
     columns.extend(
         item["alias"]
-        for item in [*aggregations, *calculations]
+        for item in [*time_buckets, *aggregations, *calculations]
         if isinstance(item, dict) and isinstance(item.get("alias"), str)
     )
     return columns

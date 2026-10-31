@@ -25,10 +25,11 @@ from datamate.query_plan import (
     PlanValidationError,
     QueryPlan,
     Sort,
+    TimeBucket,
     TimeRange,
 )
 from datamate.run_logging import RunLogError, read_run_records
-from datamate.submission import SubmissionWriter
+from datamate.submission import SubmissionWriter, serialize_submission_record
 
 
 def _business_database(tmp_path: Path) -> Path:
@@ -140,6 +141,85 @@ def test_pipeline_compares_period_scoped_aggregations_and_records_evidence(
     ]
     assert result.answer.evidence[0].columns == ("amount", "product", "sold_at")
     assert result.answer.evidence[0].filter_summary == "0 filters; time_range=yes"
+
+
+def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "monthly-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE sales (amount NUMERIC, sold_at TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?)",
+            [
+                (10, "2026-01-01"),
+                (15, "2026-01-31T23:59:00"),
+                (25, "2026-02-01"),
+                (100, "2026-03-01"),
+            ],
+        )
+    table = next(
+        table for table in BusinessDataLoader(business).discover() if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    amount = ColumnRef(table_id, "amount")
+    sold_at = ColumnRef(table_id, "sold_at")
+    plan = QueryPlan(
+        base_table=table_id,
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-02-28"),
+        time_buckets=(TimeBucket(sold_at, "month", "month"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("month", "asc"),),
+        output_type="table",
+    )
+
+    result = execute_business_plan(business, plan)
+    submission = json.loads(
+        serialize_submission_record(
+            "q-monthly",
+            result.answer,
+            plan=plan,
+        )
+    )
+
+    assert submission == {
+        "id": "q-monthly",
+        "type": "table",
+        "answer": {
+            "columns": ["month", "revenue"],
+            "rows": [["2026-01", 25], ["2026-02", 25]],
+        },
+    }
+    assert result.answer.evidence[0].columns == ("amount", "sold_at")
+    assert result.answer.evidence[0].filter_summary == (
+        "0 filters; time_range=yes; time_bucket=yes"
+    )
+
+    list_plan = QueryPlan(
+        base_table=table_id,
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-02-28"),
+        time_buckets=(TimeBucket(sold_at, "month", "month"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("month", "asc"),),
+        output_type="list",
+    )
+    list_result = execute_business_plan(business, list_plan)
+    assert list_result.answer.value == [25, 25]
+    list_submission = json.loads(
+        serialize_submission_record(
+            "q-monthly-series",
+            list_result.answer,
+            plan=list_plan,
+        )
+    )
+    assert list_submission == {
+        "id": "q-monthly-series",
+        "type": "list",
+        "answer": [25, 25],
+    }
 
 
 def test_pipeline_distinguishes_no_matching_data_from_internal_failure(

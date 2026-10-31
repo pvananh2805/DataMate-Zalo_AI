@@ -14,6 +14,7 @@ from .query_plan import (
     Join,
     QueryPlan,
     Sort,
+    TimeBucket,
     TimeRange,
 )
 
@@ -132,6 +133,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         "sort",
         "limit",
         "time_range",
+        "time_buckets",
         "business_rules",
         "output_type",
         "evidence_requirements",
@@ -252,6 +254,23 @@ def query_plan_from_dict(value: object) -> QueryPlan:
     if time_range_value is not None:
         time_range = _time_range_from_data(time_range_value, "time_range")
 
+    time_buckets = []
+    for index, item in enumerate(
+        _sequence(data.get("time_buckets", []), "time_buckets")
+    ):
+        context = f"time_buckets[{index}]"
+        bucket = _object(item, context, {"column", "granularity", "alias"})
+        time_buckets.append(
+            TimeBucket(
+                column=_column_ref(bucket.get("column"), f"{context}.column"),
+                granularity=_string(
+                    bucket.get("granularity"),
+                    f"{context}.granularity",
+                ),
+                alias=_string(bucket.get("alias"), f"{context}.alias"),
+            )
+        )
+
     business_rules = tuple(
         _string(item, f"business_rules[{index}]")
         for index, item in enumerate(
@@ -282,6 +301,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         sort=tuple(sort),
         limit=limit,
         time_range=time_range,
+        time_buckets=tuple(time_buckets),
         business_rules=business_rules,
         output_type=output_type,
         evidence_requirements=evidence_requirements,

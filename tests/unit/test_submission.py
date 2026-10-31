@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from datamate.answer_validation import Evidence, ValidatedAnswer
-from datamate.query_plan import Aggregation, ColumnRef, QueryPlan
+from datamate.query_plan import Aggregation, ColumnRef, QueryPlan, TimeBucket
 from datamate.submission import (
     SubmissionError,
     SubmissionWriter,
@@ -115,6 +115,30 @@ def test_empty_table_uses_plan_to_emit_headers() -> None:
         "id": "q-1",
         "type": "table",
         "answer": {"columns": ["name"], "rows": []},
+    }
+
+
+def test_empty_time_bucket_table_keeps_period_column_before_measure() -> None:
+    table = "sales"
+    sold_at = ColumnRef(table, "sold_at")
+    plan = QueryPlan(
+        base_table=table,
+        time_buckets=(TimeBucket(sold_at, "month", "month"),),
+        aggregations=(
+            Aggregation("sum", ColumnRef(table, "amount"), "revenue"),
+        ),
+        output_type="table",
+    )
+
+    line = serialize_submission_record(
+        "q-months",
+        ValidatedAnswer("table", [], "answered", EVIDENCE),
+        plan=plan,
+    )
+
+    assert json.loads(line)["answer"] == {
+        "columns": ["month", "revenue"],
+        "rows": [],
     }
 
 

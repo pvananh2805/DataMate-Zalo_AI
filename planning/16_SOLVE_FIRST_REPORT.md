@@ -4,7 +4,7 @@
 
 Chưa có cơ sở đo độ chính xác end-to-end hoặc tuyên bố DataMate đã giải được một dạng câu hỏi thực tế. Bộ dữ liệu train có 3.000 câu hỏi và 3.000 đáp án, nhưng không có dự đoán của một model/planner đang chạy để đối chiếu; đáp án gold không phải nhãn QueryPlan. Bộ test chứng minh phép toán trên fixture và pipeline executor, không chứng minh planner hiểu và ánh xạ đúng câu hỏi train.
 
-Trong vòng này, đã sửa lỗi lọc ngày khiến giá trị `date`/`datetime` đã chuẩn hóa không so sánh được với mốc ISO dạng chuỗi; đồng thời loại bỏ lọc từ vựng không an toàn cho ngày sai định dạng. QueryPlan/executor hiện cho phép mỗi aggregation có filter và time range riêng để đối chiếu hai kỳ trên cùng bảng, và làm tròn kết quả phần trăm đến 2 chữ số với quy tắc nửa làm tròn lên theo rulebook training. Public test không được mở. Mốc đã kiểm thử được commit `40dc03a` và push lên `origin/master`.
+Trong vòng này, đã sửa lỗi lọc ngày khiến giá trị `date`/`datetime` đã chuẩn hóa không so sánh được với mốc ISO dạng chuỗi; đồng thời loại bỏ lọc từ vựng không an toàn cho ngày sai định dạng. QueryPlan/executor hỗ trợ period scope riêng cho từng aggregation và group theo ngày/tuần/tháng/quý/năm; danh sách có thể trả về chuỗi số liệu theo kỳ, bảng có cột kỳ và evidence. Kết quả phần trăm được làm tròn đến 2 chữ số nửa lên theo rulebook training. Public test không được mở.
 
 ## Thống kê dữ liệu train
 
@@ -22,7 +22,7 @@ Các câu hỏi train được đọc có dạng bao gồm tổng phiếu nhập
 | Filter và khoảng thời gian theo ngày | Executor có test; lỗi `date`/`datetime` được sửa trong vòng này. Chưa xác minh policy/coercion trên mọi bảng train. |
 | `GROUP BY`, `JOIN`, sort, top-K | Có test executor; top-K kiểm tra được khi plan nêu rõ tiêu chí phụ tie-break. Chưa xác minh model tạo đúng plan, khóa join và sort theo quy tắc mã/tên. |
 | Tỷ lệ, chênh lệch, phần trăm thay đổi | Có phép tính trên aggregate alias; đã thêm period scope riêng theo từng aggregation, kiểm thử so sánh hai kỳ từ cùng bảng qua pipeline trên fixture; phần trăm làm tròn 2 chữ số nửa lên. Chưa benchmark planner hoặc trả lời câu hỏi train; kỳ không có dòng vẫn cần phân biệt với kỳ nằm ngoài vùng dữ liệu. |
-| Phân nhóm theo tháng/tuần/quý; nhiều kỳ liên tiếp | Chưa có time-bucket/grouping tổng quát trong QueryPlan/executor; chưa giải được câu hỏi “doanh thu mỗi tháng trong ba tháng” từ dữ liệu chi tiết chỉ có timestamp/ngày. |
+| Phân nhóm theo ngày/tuần/tháng/quý/năm | QueryPlan/executor và pipeline đã có time bucket theo lịch; tuần bắt đầu thứ Hai. Integration test xác nhận table JSONL và list chuỗi doanh thu tháng được sort theo kỳ. Chưa benchmark trên câu hỏi train; tháng không có dòng giao dịch không tự được sinh thành bucket 0, nên câu hỏi cần lấp các tháng trống vẫn chưa được giải tổng quát. |
 | Rulebook doanh thu, trả hàng, công nợ, tồn kho, đơn vị và luật ngành | Chưa được executor thực thi tổng quát. Rule tag chưa hỗ trợ bị từ chối; không được tuyên bố những dạng cần các luật này đã giải. |
 | `unanswerable`, mơ hồ, thiếu dữ liệu, abstain | Có đường biểu diễn/validation; chưa chạy trên 70 ví dụ gold và chưa đánh giá phân biệt đúng giữa không có dữ liệu, kỳ ngoài vùng dữ liệu và thiếu trường. |
 
@@ -33,15 +33,15 @@ Các câu hỏi train được đọc có dạng bao gồm tổng phiếu nhập
 - **Nguyên nhân:** `_time_matches` so mốc `str` trong QueryPlan trực tiếp với `date`/`datetime` sau normalization, gây `TypeError`. Chuỗi timestamp cũng bị so từ vựng với ngày cuối kỳ, có thể loại nhầm các phát sinh trong ngày cuối.
 - **Sửa:** so theo ngày lịch; hỗ trợ `date`, `datetime`, chuỗi ISO date/datetime; ngày cuối được tính trọn khi `inclusive_end=True` và bị loại khi là mốc kết thúc độc quyền. Chuỗi ngày sai định dạng bị báo lỗi thay vì cho kết quả lọc từ vựng.
 - **Lỗi precision:** `ratio_percent` và `percent_change` trả về số thập phân tuần hoàn nhiều chữ số, trái với rulebook yêu cầu phần trăm 2 chữ số. Đã làm tròn bằng `ROUND_HALF_UP`, giữ độ chính xác cao trước khi lượng tử hóa và tăng precision cho giá trị lớn.
-- **Test hồi quy:** date và datetime đã chuẩn hóa, timestamp cuối ngày, cận kết thúc độc quyền, ISO text và giá trị ngày sai định dạng; thêm kiểm tra phép giảm phần trăm âm, min/max/top-K tie-break, period scope trên hai kỳ và integration pipeline/evidence.
-- **Kết quả:** `pytest -q` toàn bộ **128 passed**; `compileall` và `git diff --check` thành công.
+- **Test hồi quy:** date và datetime đã chuẩn hóa, timestamp cuối ngày, cận kết thúc độc quyền, ISO text và giá trị ngày sai định dạng; kiểm tra phần trăm âm/nửa lên, min/max/top-K tie-break, period scope, năm granularities của time bucket, serialization/evaluator của bảng rỗng và integration pipeline/evidence.
+- **Kết quả:** `pytest -q` toàn bộ **137 passed**; `compileall` và `git diff --check` thành công.
 
 ## Việc còn yếu / blocker
 
 1. Chưa có model checkpoint phù hợp, prediction trên tập đánh giá hoặc annotation QueryPlan; vì vậy chưa thể đo accuracy hay khẳng định năng lực question-to-plan.
-2. Cần time-bucket/grouping theo tháng/tuần/quý; các câu hỏi train yêu cầu doanh thu từng tháng trong nhiều kỳ chưa được giải bằng executor.
+2. Time bucket hiện chỉ tạo nhóm có dữ liệu; cần xử lý an toàn các kỳ trống và phân biệt kỳ ngoài vùng dữ liệu trước khi gọi là hỗ trợ đầy đủ.
 3. Cần thực thi từng business rule có dữ liệu và test đối chứng; hiện rulebook chủ yếu được đưa vào prompt nhưng các luật chưa biểu diễn được vẫn bị fail-closed.
 4. Cần bộ benchmark/annotation có thể kiểm chứng cho 70 trường hợp unanswerable và câu hỏi mơ hồ/thiếu trường; không suy ra cách giải từ answer gold.
 5. Chưa xác minh được evaluator PA/validator challenge-specific và yêu cầu submission; chưa có GPU/model để inference benchmark hoặc fine-tune. Public test chưa được mở và không được dùng.
 
-**Phạm vi vòng này:** sửa temporal filter, thêm period scope cho từng aggregation, áp dụng precision phần trăm theo rulebook và bổ sung test đơn vị/integration. Không fine-tune, không mở public test hoặc tạo nhãn giả. Kết quả này là một bước năng lực executor đã kiểm chứng, chưa phải milestone giải câu hỏi end-to-end.
+**Phạm vi vòng này:** sửa temporal filter, thêm period scope cho từng aggregation, time bucket theo lịch, projection list/table tương ứng, áp dụng precision phần trăm theo rulebook và bổ sung test đơn vị/integration/evaluator. Không fine-tune, không mở public test hoặc tạo nhãn giả. Kết quả này là một bước năng lực executor đã kiểm chứng, chưa phải benchmark giải câu hỏi end-to-end.

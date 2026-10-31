@@ -453,6 +453,66 @@ def test_table_evaluation_normalizes_internal_run_log_rows(
     assert report["exact_matches"] == 1
 
 
+def test_empty_logged_time_bucket_table_uses_bucket_and_measure_headers(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "runs.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["month", "revenue"],
+                    "rows": [],
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "question_id": "q1",
+                "query_plan": {
+                    "base_table": "sales",
+                    "time_buckets": [
+                        {
+                            "column": {"table": "sales", "column": "sold_at"},
+                            "granularity": "month",
+                            "alias": "month",
+                        }
+                    ],
+                    "aggregations": [
+                        {
+                            "function": "sum",
+                            "column": {"table": "sales", "column": "amount"},
+                            "alias": "revenue",
+                        }
+                    ],
+                },
+                "answer": {
+                    "answer_type": "table",
+                    "value": [],
+                    "status": "answered",
+                },
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+
+
 def test_list_aliases_match_the_corresponding_item_without_reordering(
     tmp_path: Path,
 ) -> None:

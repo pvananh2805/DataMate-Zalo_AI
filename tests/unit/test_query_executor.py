@@ -12,6 +12,7 @@ from datamate.query_plan import (
     Join,
     QueryPlan,
     Sort,
+    TimeBucket,
     TimeRange,
 )
 
@@ -386,6 +387,49 @@ def test_scoped_aggregations_compare_two_periods_from_the_same_table() -> None:
             "growth_percent": Decimal(-50),
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("granularity", "expected"),
+    [
+        ("day", [("2026-03-01", Decimal(10)), ("2026-03-02", Decimal(15))]),
+        ("week", [("2026-02-23", Decimal(10)), ("2026-03-02", Decimal(15))]),
+        ("month", [("2026-03", Decimal(25))]),
+        ("quarter", [("2026-Q1", Decimal(25))]),
+        ("year", [("2026", Decimal(25))]),
+    ],
+)
+def test_time_bucket_groups_calendar_values_and_sums(
+    granularity: str,
+    expected: list[tuple[str, Decimal]],
+) -> None:
+    table = "sales"
+    sold_at = ColumnRef(table, "sold_at")
+    amount = ColumnRef(table, "amount")
+    plan = QueryPlan(
+        base_table=table,
+        time_range=TimeRange(sold_at, "2026-03-01", "2026-03-02"),
+        time_buckets=(TimeBucket(sold_at, granularity, "period"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("period", "asc"),),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("sold_at", "amount")},
+        sources={
+            table: [
+                (date(2026, 3, 1), Decimal(10)),
+                (datetime(2026, 3, 2, 23, 59), Decimal(15)),
+                (date(2026, 3, 3), Decimal(100)),
+            ]
+        },
+    )
+
+    assert [
+        (row["period"], row["revenue"])
+        for row in result.rows
+    ] == expected
 
 
 @pytest.mark.parametrize(
