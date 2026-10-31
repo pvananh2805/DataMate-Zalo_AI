@@ -51,6 +51,42 @@ def test_numeric_evaluation_ignores_only_one_ulp_float_error(
     assert report["exact_matches"] == expected_matches
 
 
+def test_nested_numeric_answers_ignore_only_one_ulp_float_error(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    table = {"columns": ["name", "amount"], "rows": [["A", 0.3]]}
+    predicted_table = {
+        "columns": ["name", "amount"],
+        "rows": [["A", 0.30000000000000004]],
+    }
+    _write_jsonl(
+        gold_path,
+        [
+            {"id": "q-list", "type": "list", "answer": [0.3]},
+            {"id": "q-table", "type": "table", "answer": table},
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {"id": "q-list", "type": "list", "answer": [0.30000000000000004]},
+            {"id": "q-table", "type": "table", "answer": predicted_table},
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 2
+
+
 def test_local_evaluation_reports_types_missing_extra_and_unanswerable(
     tmp_path: Path,
 ) -> None:
