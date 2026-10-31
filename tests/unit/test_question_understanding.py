@@ -169,6 +169,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "amount tính bằng VND" in prompt
     assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
+    assert "không thay bằng việc chỉ lọc bỏ dòng đó" in prompt
     assert "count_distinct" in prompt
     assert "không AVG trực tiếp" in prompt
     assert "unit_conversion khai báo" in prompt
