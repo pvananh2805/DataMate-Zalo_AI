@@ -7,8 +7,9 @@ import csv
 import sqlite3
 import zipfile
 from dataclasses import dataclass
+from itertools import groupby
 from pathlib import Path, PurePosixPath
-from typing import Iterator, Literal
+from typing import Iterable, Iterator, Literal
 
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
@@ -92,6 +93,53 @@ class BusinessDataLoader:
             return self._iter_sqlite_rows(path, table, batch_size)
         raise DataLoadError(f"Unsupported source format: {table.source_format}")
 
+    def iter_table_rows(
+        self, tables: Iterable[TableRef], *, batch_size: int = 512
+    ) -> Iterator[tuple[TableRef, Iterator[tuple[object, ...]]]]:
+        """Stream tables in discovery order, opening each workbook only once.
+
+        A returned row iterator must be consumed before requesting the next table.
+        """
+        ordered_tables = tuple(tables)
+        for _, grouped in groupby(
+            ordered_tables,
+            key=lambda table: (
+                table.relative_path,
+                table.source_format,
+            ),
+        ):
+            group = tuple(grouped)
+            if not group or group[0].source_format != "xlsx":
+                for table in group:
+                    yield table, self.iter_rows(table, batch_size=batch_size)
+                continue
+
+            first = group[0]
+            path = self._safe_source_path(first.relative_path)
+            workbook = None
+            try:
+                workbook = load_workbook(
+                    path, read_only=True, data_only=True, keep_links=False
+                )
+                for table in group:
+                    if table.sheet_name is None or table.sheet_name not in workbook.sheetnames:
+                        raise DataLoadError(
+                            f"Worksheet {table.sheet_name!r} no longer exists in "
+                            f"{table.relative_path}"
+                        )
+                    yield table, self._iter_excel_sheet_rows(
+                        workbook[table.sheet_name], table
+                    )
+            except DataLoadError:
+                raise
+            except (OSError, ValueError, KeyError, zipfile.BadZipFile, InvalidFileException) as exc:
+                raise DataLoadError(
+                    f"Cannot stream workbook {first.relative_path}: {exc}"
+                ) from exc
+            finally:
+                if workbook is not None:
+                    workbook.close()
+
     def _safe_source_path(self, relative_path: str) -> Path:
         relative = PurePosixPath(relative_path)
         if (
@@ -133,7 +181,22 @@ class BusinessDataLoader:
 
     @staticmethod
     def _detect_csv_encoding(path: Path) -> str:
-        for encoding in ("utf-8-sig", "cp1258"):
+        try:
+            with path.open("rb") as stream:
+                prefix = stream.read(4)
+        except OSError as exc:
+            raise DataLoadError(f"Cannot read CSV {path}: {exc}") from exc
+
+        if prefix.startswith(codecs.BOM_UTF32_LE) or prefix.startswith(codecs.BOM_UTF32_BE):
+            candidates = ("utf-32",)
+        elif prefix.startswith(codecs.BOM_UTF16_LE) or prefix.startswith(codecs.BOM_UTF16_BE):
+            candidates = ("utf-16",)
+        elif prefix.startswith(codecs.BOM_UTF8):
+            candidates = ("utf-8-sig",)
+        else:
+            candidates = ("utf-8-sig", "cp1258", "cp1252")
+
+        for encoding in candidates:
             decoder = codecs.getincrementaldecoder(encoding)(errors="strict")
             try:
                 with path.open("rb") as stream:
@@ -143,9 +206,9 @@ class BusinessDataLoader:
                 return encoding
             except UnicodeDecodeError:
                 continue
-            except OSError as exc:
-                raise DataLoadError(f"Cannot read CSV {path}: {exc}") from exc
-        raise DataLoadError(f"CSV encoding is not supported (UTF-8 or CP1258): {path}")
+        raise DataLoadError(
+            f"CSV encoding is not supported (UTF-8, UTF-16/32, CP1258, or CP1252): {path}"
+        )
 
     @staticmethod
     def _csv_dialect(path: Path, encoding: str) -> tuple[str, str, bool, str | None, bool]:
@@ -207,18 +270,34 @@ class BusinessDataLoader:
         try:
             workbook = load_workbook(path, read_only=True, data_only=True, keep_links=False)
             for sheet in workbook.worksheets:
-                rows = sheet.iter_rows(min_row=1, max_row=2, values_only=True)
-                first_row = next(rows, None)
-                second_row = next(rows, None)
+                preview_rows = list(
+                    sheet.iter_rows(min_row=1, max_row=5, values_only=True)
+                )
+                first_row = preview_rows[0] if preview_rows else None
+                second_row = preview_rows[1] if len(preview_rows) > 1 else None
                 if first_row is None:
                     continue
-                first_count = sum(
-                    value is not None and str(value) != "" for value in first_row
+                non_empty_counts = [
+                    sum(value is not None and str(value) != "" for value in row)
+                    for row in preview_rows
+                ]
+                first_count = non_empty_counts[0]
+                second_count = non_empty_counts[1] if len(non_empty_counts) > 1 else 0
+                shifted_header = next(
+                    (
+                        index
+                        for index in range(2, len(non_empty_counts))
+                        if non_empty_counts[index] >= 3
+                        and non_empty_counts[index - 1] == 0
+                        and all(count <= 2 for count in non_empty_counts[:index])
+                    ),
+                    None,
                 )
-                second_count = sum(
-                    value is not None and str(value) != "" for value in second_row or ()
-                )
-                if first_count == 0 and second_count >= 2:
+                if shifted_header is not None:
+                    header = preview_rows[shifted_header]
+                    header_row = shifted_header + 1
+                    classification_warning = "leading_metadata_rows_skipped"
+                elif first_count == 0 and second_count >= 2:
                     header = second_row
                     header_row = 2
                     classification_warning = "blank_first_row_skipped"
@@ -327,23 +406,7 @@ class BusinessDataLoader:
                     f"Worksheet {table.sheet_name!r} no longer exists in {table.relative_path}"
                 )
             sheet = workbook[table.sheet_name]
-            for row_number, row in enumerate(
-                sheet.iter_rows(min_row=table.header_row + 1, values_only=True),
-                start=table.header_row + 1,
-            ):
-                values = tuple(row)
-                if len(values) > len(table.columns) and any(
-                    value is not None for value in values[len(table.columns) :]
-                ):
-                    raise DataLoadError(
-                        f"Excel row has values beyond the header in {table.relative_path}"
-                        f":{table.sheet_name} at row {row_number}"
-                    )
-                values = values[: len(table.columns)]
-                if len(values) < len(table.columns):
-                    values += (None,) * (len(table.columns) - len(values))
-                if any(value is not None for value in values):
-                    yield values
+            yield from self._iter_excel_sheet_rows(sheet, table)
         except DataLoadError:
             raise
         except (OSError, ValueError, KeyError, zipfile.BadZipFile, InvalidFileException) as exc:
@@ -353,6 +416,28 @@ class BusinessDataLoader:
         finally:
             if workbook is not None:
                 workbook.close()
+
+    @staticmethod
+    def _iter_excel_sheet_rows(
+        sheet: object, table: TableRef
+    ) -> Iterator[tuple[object, ...]]:
+        for row_number, row in enumerate(
+            sheet.iter_rows(min_row=table.header_row + 1, values_only=True),
+            start=table.header_row + 1,
+        ):
+            values = tuple(row)
+            if len(values) > len(table.columns) and any(
+                value is not None for value in values[len(table.columns) :]
+            ):
+                raise DataLoadError(
+                    f"Excel row has values beyond the header in {table.relative_path}"
+                    f":{table.sheet_name} at row {row_number}"
+                )
+            values = values[: len(table.columns)]
+            if len(values) < len(table.columns):
+                values += (None,) * (len(table.columns) - len(values))
+            if any(value is not None for value in values):
+                yield values
 
     def _iter_sqlite_rows(
         self, path: Path, table: TableRef, batch_size: int
