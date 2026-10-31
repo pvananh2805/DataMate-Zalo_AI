@@ -97,6 +97,18 @@ def _answer_value(
         if any(len(row) != 1 for row in result.rows):
             raise PipelineError("list output requires exactly one result column")
         return [next(iter(row.values())) for row in result.rows]
+    if plan.calculations:
+        if len(result.rows) != 1:
+            raise PipelineError(
+                f"{answer_type} output requires exactly one scalar result"
+            )
+        key = plan.calculations[-1].alias
+        try:
+            return result.rows[0][key]
+        except KeyError as exc:
+            raise PipelineError(
+                f"scalar calculation output is unavailable: {key}"
+            ) from exc
     if len(result.rows) != 1 or len(result.rows[0]) != 1:
         raise PipelineError(
             f"{answer_type} output requires exactly one scalar result"

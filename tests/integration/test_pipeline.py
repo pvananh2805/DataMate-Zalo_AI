@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -360,6 +361,66 @@ def test_pipeline_counts_distinct_orders_across_repeated_line_items(
     assert result.answer.value == 2
     assert result.answer.status == "answered"
     assert result.execution.trace.filtered_rows == 4
+
+
+def test_pipeline_calculates_cancelled_order_rate_over_all_unique_orders(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "cancellation-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE order_lines "
+            "(order_id TEXT, status TEXT, ordered_at TEXT, amount INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO order_lines VALUES (?, ?, ?, ?)",
+            [
+                ("O-1", "completed", "2026-01-03", 10),
+                ("O-1", "completed", "2026-01-03", 20),
+                ("O-2", "cancelled", "2026-01-04", 30),
+                ("O-2", "cancelled", "2026-01-04", 40),
+                ("O-3", "cancelled", "2026-01-05", 50),
+                ("O-4", "returned", "2026-01-06", 60),
+            ],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "order_lines"
+    )
+    table_id = table_identifier(table)
+    order_id = ColumnRef(table_id, "order_id")
+    status = ColumnRef(table_id, "status")
+    ordered_at = ColumnRef(table_id, "ordered_at")
+    plan = QueryPlan(
+        base_table=table_id,
+        time_range=TimeRange(ordered_at, "2026-01-01", "2026-01-31"),
+        aggregations=(
+            Aggregation(
+                "count_distinct",
+                order_id,
+                "cancelled_orders",
+                filters=(Filter(status, "eq", "cancelled"),),
+            ),
+            Aggregation("count_distinct", order_id, "all_orders"),
+        ),
+        calculations=(
+            Calculation(
+                "ratio_percent",
+                "cancelled_orders",
+                "all_orders",
+                "cancellation_rate",
+            ),
+        ),
+        output_type="percent",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.answer_type == "percent"
+    assert result.answer.value == Decimal("50.00")
+    assert result.answer.status == "answered"
 
 
 def test_csv_plan_uses_explicit_locale_normalization_without_guessing(
