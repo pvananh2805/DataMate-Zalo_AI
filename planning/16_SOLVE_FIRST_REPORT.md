@@ -6,6 +6,13 @@ Chưa có cơ sở đo độ chính xác end-to-end hoặc tuyên bố DataMate 
 
 Trong các vòng trước, đã sửa lỗi lọc ngày khiến giá trị `date`/`datetime` đã chuẩn hóa không so sánh được với mốc ISO dạng chuỗi; đồng thời loại bỏ lọc từ vựng không an toàn cho ngày sai định dạng. QueryPlan/executor hỗ trợ period scope riêng cho từng aggregation và group theo ngày/tuần/tháng/quý/năm; danh sách có thể trả về chuỗi số liệu theo kỳ, bảng có cột kỳ và evidence. Với một time bucket, một hoặc nhiều SUM/COUNT/COUNT DISTINCT không có aggregation time scope và time range cùng cột bucket, pipeline sinh bucket trống bằng 0 trong giao time range/độ phủ; khi có group, chỉ các group có ít nhất một dòng khớp trong phạm vi hỏi được mở rộng sang các bucket còn thiếu. Không tạo group không có dòng khớp ở mọi kỳ hoặc kỳ ngoài độ phủ; giới hạn group-period bằng `max_groups`. Pipeline phân biệt time range hoàn toàn ngoài dữ liệu (unanswerable) với time range nằm trong/chéo vùng dữ liệu. Kết quả phần trăm được làm tròn đến 2 chữ số nửa lên theo rulebook training. Executor nay cũng loại toàn bộ nhóm đơn hàng nếu có bất kỳ dòng base-table nào khớp marker (ví dụ quantity âm), thay vì lọc riêng dòng marker; thực thi này có giới hạn, validation và SQLite integration test. Public test không được mở.
 
+## Cập nhật vận hành
+
+- Entrypoint inference thống nhất là `scripts/run_inference.py`; có thể chạy với `--config config/inference.local.json` hoặc CLI flags. Config hỗ trợ input JSONL, business data root, local checkpoint, output run log/submission, business context, coercions và ngày tham chiếu mặc định. Câu hỏi vẫn qua `JsonPlanAdapter`/planner thật được backend cung cấp rồi mới tới executor; expected answer không được dùng ở đường inference.
+- Đã tạo README/INSTALL/QUICKSTART, config mẫu và báo cáo triển khai tại `planning/17_DEPLOYMENT_REPORT.md`. Câu hỏi thủ công và replay vẫn có CLI riêng.
+- Full suite trong virtual environment mới, chỉ cài development dependencies: **199 passed**; integration chứng minh pipeline trên SQLite fixture bằng planner stub. Không dùng public/private test, không fine-tune hoặc sửa training data trong milestone này.
+- Kết quả trên không chứng minh accuracy/model inference thực tế: máy hiện không có PyTorch, Transformers, NVIDIA CUDA hoặc checkpoint đã chọn. Submission chỉ theo schema tham khảo training rulebook, chưa được validator chính thức xác nhận. Docker chưa triển khai/kiểm chứng do thiếu Docker CLI, Dockerfile và technical guideline được xác minh.
+
 ## Thống kê dữ liệu train
 
 ## Manual testing tự tạo

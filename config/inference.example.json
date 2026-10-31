@@ -1,0 +1,14 @@
+{
+  "input": "../input/questions.jsonl",
+  "business_data_root": "../input/business",
+  "model_path": "../models/local-checkpoint",
+  "log": "../output/run.jsonl",
+  "submission_output": "../output/submission.jsonl",
+  "coercions": null,
+  "rulebook": null,
+  "calendar": null,
+  "as_of_date": null,
+  "precision": "bf16",
+  "max_new_tokens": 1024,
+  "parameter_cap": 15000000000
+}

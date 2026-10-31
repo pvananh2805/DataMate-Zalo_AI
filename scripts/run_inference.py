@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import date
 from pathlib import Path
+from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from datamate.answer_validation import AnswerValidationError
 from datamate.business_context import (
@@ -70,6 +75,91 @@ def _safe_business_directory(root: Path, business_id: object) -> Path:
     return business_dir
 
 
+def _read_inference_config(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read inference configuration {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Inference configuration must be a JSON object")
+
+    path_fields = {
+        "input",
+        "business_data_root",
+        "model_path",
+        "log",
+        "submission_output",
+        "coercions",
+        "rulebook",
+        "calendar",
+    }
+    value_fields = {
+        "as_of_date",
+        "precision",
+        "max_new_tokens",
+        "parameter_cap",
+    }
+    unknown = set(payload) - path_fields - value_fields
+    if unknown:
+        raise ValueError(
+            "Unknown inference configuration fields: "
+            + ", ".join(sorted(unknown))
+        )
+
+    config: dict[str, Any] = {}
+    optional_path_fields = {"coercions", "rulebook", "calendar"}
+    for field in path_fields:
+        if field in optional_path_fields and field not in payload:
+            config[field] = None
+            continue
+        value = payload.get(field)
+        if value is None and field in optional_path_fields:
+            config[field] = None
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Configuration field {field} must be a non-empty path")
+        candidate = Path(value)
+        config[field] = (
+            candidate if candidate.is_absolute() else path.resolve().parent / candidate
+        ).resolve()
+
+    as_of_date = payload.get("as_of_date")
+    if as_of_date is not None:
+        if not isinstance(as_of_date, str):
+            raise ValueError("Configuration field as_of_date must be an ISO-8601 date")
+        try:
+            date.fromisoformat(as_of_date)
+        except ValueError as exc:
+            raise ValueError(
+                "Configuration field as_of_date must be an ISO-8601 date"
+            ) from exc
+    config["as_of_date"] = as_of_date
+
+    precision = payload.get("precision", "bf16")
+    if not isinstance(precision, str) or precision not in {"fp32", "fp16", "bf16"}:
+        raise ValueError("Configuration precision must be fp32, fp16, or bf16")
+    config["precision"] = precision
+    for field, default, minimum, maximum in (
+        ("max_new_tokens", 1024, 1, 4096),
+        ("parameter_cap", 15_000_000_000, 1, None),
+    ):
+        value = payload.get(field, default)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < minimum
+            or (maximum is not None and value > maximum)
+        ):
+            range_text = (
+                f"{minimum}..{maximum}" if maximum is not None else f">= {minimum}"
+            )
+            raise ValueError(
+                f"Configuration field {field} must be an integer {range_text}"
+            )
+        config[field] = value
+    return config
+
+
 def _process_questions(
     input_path: Path,
     business_root: Path,
@@ -80,6 +170,7 @@ def _process_questions(
     rulebook_path: Path | None,
     calendar_path: Path | None,
     submission_writer: SubmissionWriter | None,
+    default_as_of_date: str | None = None,
 ) -> tuple[int, int]:
     succeeded = 0
     failed = 0
@@ -114,10 +205,22 @@ def _process_questions(
                 )
                 failed += 1
                 continue
+            if as_of_date is None:
+                as_of_date = default_as_of_date
             if as_of_date is not None and not isinstance(as_of_date, str):
                 print(f"as_of_date không hợp lệ ở dòng {line_number}", file=sys.stderr)
                 failed += 1
                 continue
+            if as_of_date is not None:
+                try:
+                    date.fromisoformat(as_of_date)
+                except ValueError:
+                    print(
+                        f"as_of_date phải theo định dạng ISO-8601 ở dòng {line_number}",
+                        file=sys.stderr,
+                    )
+                    failed += 1
+                    continue
             try:
                 business_dir = _safe_business_directory(business_root, business_id)
                 if business_id not in context_cache:
@@ -191,60 +294,119 @@ def main() -> None:
         if hasattr(output, "reconfigure"):
             output.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="Tệp câu hỏi JSONL")
+    parser.add_argument("--config", type=Path, help="JSON cấu hình inference")
+    parser.add_argument("--input", type=Path, help="Tệp câu hỏi JSONL")
     parser.add_argument(
         "--business-data-root",
-        required=True,
+        type=Path,
+        dest="business_data_root",
         help="Thư mục chứa thư mục con cho từng business_id",
     )
-    parser.add_argument("--model-path", required=True, help="Checkpoint mô hình cục bộ")
-    parser.add_argument("--log", required=True, help="Tệp nhật ký JSONL nội bộ")
+    parser.add_argument("--model-path", type=Path, help="Checkpoint mô hình cục bộ")
+    parser.add_argument("--log", type=Path, help="Tệp nhật ký JSONL nội bộ")
     parser.add_argument("--coercions", type=Path, help="JSON policy chuẩn hóa đã duyệt")
     parser.add_argument("--rulebook", type=Path, help="Markdown rulebook dùng chung")
     parser.add_argument("--calendar", type=Path, help="CSV calendar dùng chung")
+    parser.add_argument("--as-of-date", help="Ngày ISO-8601 mặc định cho câu hỏi")
     parser.add_argument(
         "--submission-output",
         type=Path,
         help="JSONL tham khảo rulebook training; chưa xác minh với validator cuộc thi",
     )
-    parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"), default="bf16")
-    parser.add_argument("--max-new-tokens", type=int, default=1024)
-    parser.add_argument("--parameter-cap", type=int, default=15_000_000_000)
+    parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"))
+    parser.add_argument("--max-new-tokens", type=int)
+    parser.add_argument("--parameter-cap", type=int)
     args = parser.parse_args()
 
-    input_path = Path(args.input).resolve()
-    business_root = Path(args.business_data_root).resolve()
-    log_path = Path(args.log).resolve()
-    submission_path = (
-        Path(args.submission_output).resolve()
-        if args.submission_output is not None
-        else None
-    )
+    try:
+        config = _read_inference_config(args.config) if args.config else {}
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    def option(name: str) -> Any:
+        value = getattr(args, name)
+        return value if value is not None else config.get(name)
+
+    input_path = option("input")
+    business_root = option("business_data_root")
+    model_path = option("model_path")
+    log_path = option("log")
+    submission_path = option("submission_output")
+    if (
+        input_path is None
+        or business_root is None
+        or model_path is None
+        or log_path is None
+    ):
+        parser.error(
+            "provide --config or the --input, --business-data-root, --model-path, "
+            "and --log options"
+        )
+    if submission_path is None:
+        parser.error(
+            "provide --submission-output or set submission_output in --config"
+        )
+    input_path = Path(input_path).resolve()
+    business_root = Path(business_root).resolve()
+    model_path = Path(model_path).resolve()
+    log_path = Path(log_path).resolve()
+    submission_path = Path(submission_path).resolve()
     if not input_path.is_file() or not business_root.is_dir():
         parser.error("input file and business-data-root directory must exist")
-    if submission_path is not None and submission_path.exists():
+    if not model_path.is_dir():
+        parser.error(f"model checkpoint directory does not exist: {model_path}")
+    if submission_path.exists():
         parser.error(f"Tệp submission đã tồn tại: {submission_path}")
+    as_of_date = (
+        args.as_of_date
+        if args.as_of_date is not None
+        else config.get("as_of_date")
+    )
+    if as_of_date is not None:
+        try:
+            date.fromisoformat(as_of_date)
+        except (TypeError, ValueError):
+            parser.error("as-of-date must be an ISO-8601 date")
+    precision = args.precision or config.get("precision", "bf16")
+    max_new_tokens = (
+        args.max_new_tokens
+        if args.max_new_tokens is not None
+        else config.get("max_new_tokens", 1024)
+    )
+    parameter_cap = (
+        args.parameter_cap
+        if args.parameter_cap is not None
+        else config.get("parameter_cap", 15_000_000_000)
+    )
+    if not isinstance(max_new_tokens, int) or not 1 <= max_new_tokens <= 4096:
+        parser.error("max-new-tokens must be between 1 and 4096")
+    if not isinstance(parameter_cap, int) or parameter_cap < 1:
+        parser.error("parameter-cap must be positive")
+    coercions_path = option("coercions")
+    rulebook_path = option("rulebook")
+    calendar_path = option("calendar")
     try:
         validate_log_destination(
             log_path,
             forbidden_roots=(input_path.parent, business_root),
         )
-        if submission_path is not None:
-            validate_log_destination(
-                submission_path,
-                forbidden_roots=(input_path.parent, business_root),
-            )
-            if submission_path == log_path:
-                raise ValueError("Submission và run log phải là hai tệp khác nhau")
-        coercions = _read_coercions(args.coercions)
+        validate_log_destination(
+            submission_path,
+            forbidden_roots=(input_path.parent, business_root),
+        )
+        if submission_path == log_path:
+            raise ValueError("Submission và run log phải là hai tệp khác nhau")
+        coercions = _read_coercions(
+            Path(coercions_path).resolve() if coercions_path is not None else None
+        )
     except (ValueError, OSError) as exc:
         parser.error(str(exc))
 
     backend = LocalTransformersBackend(
-        args.model_path,
-        precision=args.precision,
-        max_new_tokens=args.max_new_tokens,
-        parameter_cap=args.parameter_cap,
+        model_path,
+        precision=precision,
+        max_new_tokens=max_new_tokens,
+        parameter_cap=parameter_cap,
     )
     try:
         backend.load()
@@ -263,9 +425,14 @@ def main() -> None:
             planner,
             log_path,
             coercions,
-            rulebook_path=args.rulebook,
-            calendar_path=args.calendar,
+            rulebook_path=(
+                Path(rulebook_path).resolve() if rulebook_path is not None else None
+            ),
+            calendar_path=(
+                Path(calendar_path).resolve() if calendar_path is not None else None
+            ),
             submission_writer=submission_writer,
+            default_as_of_date=as_of_date,
         )
         if submission_writer is not None:
             if failed:

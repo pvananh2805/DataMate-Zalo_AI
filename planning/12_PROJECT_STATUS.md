@@ -3,6 +3,14 @@
 **Cập nhật:** 2026-10-31
 **Mốc nền ban đầu của Solve-First:** `365ed71`. Các milestone đã xác minh được commit/push lên `origin/master`; không stage dữ liệu train và planning artifacts ngoài phạm vi.
 
+## Mốc operationalization & deployment
+
+- Entrypoint batch inference thống nhất là `scripts/run_inference.py`; nhận config JSON bằng `--config` hoặc các CLI flags tương đương. Config nhận input JSONL, business-data root, checkpoint local, run log, submission output, coercion/context và `as_of_date` mặc định. Đường dẫn config tương đối được tính từ thư mục config; ngày trên từng câu hỏi được ưu tiên.
+- Đã bổ sung `README.md`, `INSTALL.md`, `QUICKSTART.md`, `config/inference.example.json` và `planning/17_DEPLOYMENT_REPORT.md`; config cá nhân `config/inference.local.json` bị Git ignore. Giữ nguyên replay/manual CLI.
+- Môi trường Python 3.12.6 mới được tạo riêng và cài `requirements-dev.txt` từ đầu; full suite **199 passed**, compileall và trợ giúp của 8 CLI thành công. Test inference dùng SQLite fixture và planner stub, không đọc public/private test hoặc dữ liệu doanh nghiệp.
+- Chỉ kiểm chứng cài/test dependency nhẹ; chưa cài PyTorch/Transformers, chưa có checkpoint và GPU CUDA trong môi trường này. Vì vậy chưa chạy inference model thật, chưa chứng minh output submission được validator cuộc thi chấp nhận. Backend yêu cầu CUDA và tải checkpoint local/offline.
+- Repository không có Dockerfile, Docker CLI không sẵn có, và guideline/interface Docker cuộc thi chưa xác minh; không tạo Dockerfile và không tuyên bố Docker hoạt động. Chi tiết bằng chứng, lệnh chạy và hạn chế ở `planning/17_DEPLOYMENT_REPORT.md`.
+
 ## Cập nhật Solve-First
 
 - Đã tạo harness manual test: `manual_test/questions.jsonl` hiện là file rỗng để người dùng tự nhập, không lấy câu hỏi từ các bộ dữ liệu; README ghi schema theo submission/evaluator. CLI `python scripts\run_manual_test.py --business-data-root <thư-mục-business> --model-path <checkpoint-local>` gửi câu hỏi nguyên bản qua planner thực tế, chạy pipeline/executor, ghi QueryPlan/evidence/trace và so `expected_answer` sau prediction bằng evaluator local. `questions.jsonl`, results/report và mọi file khác trong `manual_test/` (trừ README) bị ignore bằng `.git/info/exclude` cục bộ. Integration test dùng planner stub xác nhận không lộ expected answer, phép so khớp, bảng, abstain và lưu lỗi; chưa chạy model thật do yêu cầu CUDA/checkpoint.
