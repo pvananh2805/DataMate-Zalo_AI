@@ -474,8 +474,7 @@ def _aggregate(
                     state.count += 1
 
     if (
-        not group_refs
-        and len(time_buckets) == 1
+        len(time_buckets) == 1
         and plan.time_range is not None
         and time_buckets[0].column == plan.time_range.column
         and bool(plan.aggregations)
@@ -502,29 +501,36 @@ def _aggregate(
             first_day = max(requested_start, coverage[0])
             last_day = min(requested_end, coverage[1])
             if not empty_range and first_day <= last_day:
-                bucket_day = _bucket_start(first_day, bucket.granularity)
-                while bucket_day <= last_day:
-                    label = _time_bucket(bucket_day, bucket)
-                    key = (label,)
-                    if key not in grouped:
-                        if len(grouped) >= max_groups:
-                            raise QueryExecutionError(
-                                f"Group count exceeds configured limit {max_groups}"
+                group_keys = (
+                    {key[: len(group_refs)] for key in grouped}
+                    if group_refs
+                    else {()}
+                )
+                for group_key in group_keys:
+                    bucket_day = _bucket_start(first_day, bucket.granularity)
+                    while bucket_day <= last_day:
+                        label = _time_bucket(bucket_day, bucket)
+                        key = (*group_key, label)
+                        if key not in grouped:
+                            if len(grouped) >= max_groups:
+                                raise QueryExecutionError(
+                                    "Group count exceeds configured limit "
+                                    f"{max_groups}"
+                                )
+                            states = []
+                            for aggregation in plan.aggregations:
+                                state = _AggregateState()
+                                if aggregation.function == "sum":
+                                    state.count = 1
+                                states.append(state)
+                            grouped[key] = (key, states)
+                        try:
+                            bucket_day = _next_bucket_start(
+                                bucket_day,
+                                bucket.granularity,
                             )
-                        states = []
-                        for aggregation in plan.aggregations:
-                            state = _AggregateState()
-                            if aggregation.function == "sum":
-                                state.count = 1
-                            states.append(state)
-                        grouped[key] = (key, states)
-                    try:
-                        bucket_day = _next_bucket_start(
-                            bucket_day,
-                            bucket.granularity,
-                        )
-                    except (OverflowError, ValueError):
-                        break
+                        except (OverflowError, ValueError):
+                            break
 
     if not grouped and not group_refs and not time_buckets:
         grouped[()] = ((), [_AggregateState() for _ in plan.aggregations])

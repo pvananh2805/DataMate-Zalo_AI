@@ -164,6 +164,17 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
                 (20, "2026-03-01"),
             ],
         )
+        connection.execute(
+            "CREATE TABLE product_sales (product TEXT, amount NUMERIC, sold_at TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO product_sales VALUES (?, ?, ?)",
+            [
+                ("A", 10, "2026-01-01"),
+                ("A", 30, "2026-03-01"),
+                ("B", 5, "2026-03-01"),
+            ],
+        )
     table = next(
         table for table in BusinessDataLoader(business).discover() if table.name == "sales"
     )
@@ -226,6 +237,55 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
         "id": "q-monthly-series",
         "type": "list",
         "answer": [25, 0, 20],
+    }
+
+    product_table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "product_sales"
+    )
+    product_table_id = table_identifier(product_table)
+    product = ColumnRef(product_table_id, "product")
+    product_sold_at = ColumnRef(product_table_id, "sold_at")
+    grouped_plan = QueryPlan(
+        base_table=product_table_id,
+        selected_columns=(product,),
+        group_by=(product,),
+        time_range=TimeRange(product_sold_at, "2026-01-01", "2026-03-31"),
+        time_buckets=(TimeBucket(product_sold_at, "month", "month"),),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(product_table_id, "amount"),
+                "revenue",
+            ),
+        ),
+        sort=(Sort(product, "asc"), Sort("month", "asc")),
+        output_type="table",
+    )
+    grouped_result = execute_business_plan(business, grouped_plan)
+    grouped_submission = json.loads(
+        serialize_submission_record(
+            "q-product-monthly",
+            grouped_result.answer,
+            plan=grouped_plan,
+        )
+    )
+
+    assert grouped_submission == {
+        "id": "q-product-monthly",
+        "type": "table",
+        "answer": {
+            "columns": ["product", "month", "revenue"],
+            "rows": [
+                ["A", "2026-01", 10],
+                ["A", "2026-02", 0],
+                ["A", "2026-03", 30],
+                ["B", "2026-01", 0],
+                ["B", "2026-02", 0],
+                ["B", "2026-03", 5],
+            ],
+        },
     }
 
 

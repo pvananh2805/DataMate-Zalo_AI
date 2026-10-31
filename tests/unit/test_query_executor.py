@@ -943,6 +943,88 @@ def test_time_bucket_fills_all_supported_aggregations_for_empty_periods() -> Non
     )
 
 
+def test_time_bucket_fills_empty_periods_per_observed_group_within_limit() -> None:
+    table = "sales"
+    product = ColumnRef(table, "product")
+    sold_at = ColumnRef(table, "sold_at")
+    amount = ColumnRef(table, "amount")
+    order_id = ColumnRef(table, "order_id")
+    plan = QueryPlan(
+        base_table=table,
+        group_by=(product,),
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
+        time_buckets=(TimeBucket(sold_at, "month", "month"),),
+        aggregations=(
+            Aggregation("sum", amount, "revenue"),
+            Aggregation("count_distinct", order_id, "orders"),
+        ),
+        sort=(Sort(product, "asc"), Sort("month", "asc")),
+    )
+    sources = {
+        table: [
+            ("A", date(2026, 1, 1), Decimal(10), "A-1"),
+            ("A", date(2026, 3, 1), Decimal(30), "A-2"),
+            ("B", date(2026, 3, 1), Decimal(5), "B-1"),
+        ]
+    }
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("product", "sold_at", "amount", "order_id")},
+        sources=sources,
+    )
+
+    assert result.rows == (
+        {
+            f"{table}.product": "A",
+            "month": "2026-01",
+            "revenue": Decimal(10),
+            "orders": 1,
+        },
+        {
+            f"{table}.product": "A",
+            "month": "2026-02",
+            "revenue": Decimal(0),
+            "orders": 0,
+        },
+        {
+            f"{table}.product": "A",
+            "month": "2026-03",
+            "revenue": Decimal(30),
+            "orders": 1,
+        },
+        {
+            f"{table}.product": "B",
+            "month": "2026-01",
+            "revenue": Decimal(0),
+            "orders": 0,
+        },
+        {
+            f"{table}.product": "B",
+            "month": "2026-02",
+            "revenue": Decimal(0),
+            "orders": 0,
+        },
+        {
+            f"{table}.product": "B",
+            "month": "2026-03",
+            "revenue": Decimal(5),
+            "orders": 1,
+        },
+    )
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="Group count exceeds configured limit 5",
+    ):
+        execute_query_plan(
+            plan,
+            catalog={table: ("product", "sold_at", "amount", "order_id")},
+            sources={table: iter(sources[table])},
+            max_groups=5,
+        )
+
+
 def test_time_bucket_preserves_null_sum_for_periods_with_only_null_values() -> None:
     table = "sales"
     sold_at = ColumnRef(table, "sold_at")
