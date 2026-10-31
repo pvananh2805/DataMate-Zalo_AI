@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Mapping
+from typing import Iterator, Mapping
 
 from .answer_validation import ValidatedAnswer
 from .query_executor import ExecutionTrace
@@ -124,10 +124,9 @@ def append_run_record(
         raise RunLogError(f"Cannot append run log {destination}: {exc}") from exc
 
 
-def read_run_records(log_path: Path | str) -> list[dict[str, object]]:
-    """Read and validate every JSONL record; malformed lines are never skipped."""
+def iter_run_records(log_path: Path | str) -> Iterator[dict[str, object]]:
+    """Đọc và kiểm tra tuần tự từng bản ghi JSONL; không bỏ qua dòng lỗi."""
     source = Path(log_path)
-    records: list[dict[str, object]] = []
     try:
         with source.open("r", encoding="utf-8") as stream:
             for line_number, line in enumerate(stream, start=1):
@@ -143,7 +142,11 @@ def read_run_records(log_path: Path | str) -> list[dict[str, object]]:
                     raise RunLogError(
                         f"Unsupported run-log record at {source}:{line_number}"
                     )
-                records.append(value)
+                yield value
     except OSError as exc:
         raise RunLogError(f"Cannot read run log {source}: {exc}") from exc
-    return records
+
+
+def read_run_records(log_path: Path | str) -> list[dict[str, object]]:
+    """Read and validate every JSONL record; malformed lines are never skipped."""
+    return list(iter_run_records(log_path))

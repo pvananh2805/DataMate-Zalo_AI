@@ -43,6 +43,7 @@ class BusinessSchema:
 class PipelineResult:
     answer: ValidatedAnswer
     execution: ExecutionResult | None
+    plan: QueryPlan
 
 
 def table_identifier(table: TableRef) -> str:
@@ -201,7 +202,7 @@ def execute_business_plan(
             evidence=_evidence_for(plan, execution),
         )
     validate_answer(answer)
-    return PipelineResult(answer=answer, execution=execution)
+    return PipelineResult(answer=answer, execution=execution, plan=plan)
 
 
 def _abstention_result(plan: QueryPlan) -> PipelineResult:
@@ -226,7 +227,7 @@ def _abstention_result(plan: QueryPlan) -> PipelineResult:
         explanation=reason,
     )
     validate_answer(answer)
-    return PipelineResult(answer=answer, execution=None)
+    return PipelineResult(answer=answer, execution=None, plan=plan)
 
 
 def execute_and_log_business_plan(

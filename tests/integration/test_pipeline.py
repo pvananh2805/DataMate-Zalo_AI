@@ -25,6 +25,7 @@ from datamate.query_plan import (
     QueryPlan,
 )
 from datamate.run_logging import RunLogError, read_run_records
+from datamate.submission import SubmissionWriter
 
 
 def _business_database(tmp_path: Path) -> Path:
@@ -226,6 +227,7 @@ def test_question_to_plan_to_answer_is_integrated_and_logged(tmp_path: Path) -> 
         model_name="local-stub",
     )
     log_path = tmp_path / "logs" / "question.jsonl"
+    submission_path = tmp_path / "result" / "submission.jsonl"
 
     result = execute_question_and_log(
         business,
@@ -246,6 +248,9 @@ def test_question_to_plan_to_answer_is_integrated_and_logged(tmp_path: Path) -> 
             }
         },
     )
+    writer = SubmissionWriter(submission_path)
+    writer.append("q-003", result.answer, plan=result.plan)
+    writer.commit()
 
     (record,) = read_run_records(log_path)
     assert result.answer.value == 20
@@ -258,6 +263,11 @@ def test_question_to_plan_to_answer_is_integrated_and_logged(tmp_path: Path) -> 
     assert prompts and "# Quy tắc doanh thu" in prompts[0]
     assert "amount tính bằng VND" in prompts[0]
     assert "2026-01-31" in prompts[0]
+    assert json.loads(submission_path.read_text(encoding="utf-8")) == {
+        "id": "q-003",
+        "type": "number",
+        "answer": 20,
+    }
 
 
 def test_question_planning_failure_is_recorded_without_a_fake_plan(

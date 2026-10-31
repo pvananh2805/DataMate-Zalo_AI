@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -88,6 +89,15 @@ def _is_valid_date(value: object) -> bool:
     if isinstance(value, date):
         return True
     if not isinstance(value, str):
+        return False
+    if re.fullmatch(r"\d{4}-\d{2}", value):
+        try:
+            year, month = (int(part) for part in value.split("-"))
+            date(year, month, 1)
+            return True
+        except ValueError:
+            return False
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
         return False
     try:
         date.fromisoformat(value)

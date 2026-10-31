@@ -21,6 +21,7 @@ EVIDENCE = (Evidence("orders.csv::orders", ("amount",), "sum", 3),)
         ("percent", -12.5),
         ("string", "Không có dữ liệu"),
         ("date", "2026-01-31"),
+        ("date", "2026-01"),
         ("boolean", False),
         ("list", [1, "x"]),
         ("list", [Decimal("1.25")]),
