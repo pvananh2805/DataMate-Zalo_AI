@@ -124,6 +124,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
     assert "count_distinct" in prompt
+    assert "mã tăng dần" in prompt
 
 
 def test_json_plan_adapter_validates_against_discovered_schema() -> None:

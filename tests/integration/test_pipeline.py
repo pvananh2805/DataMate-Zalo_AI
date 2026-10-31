@@ -423,6 +423,61 @@ def test_pipeline_calculates_cancelled_order_rate_over_all_unique_orders(
     assert result.answer.status == "answered"
 
 
+def test_table_output_hides_grouping_key_used_only_for_tie_breaks(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "ranked-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE products (product_code TEXT, name TEXT, revenue INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO products VALUES (?, ?, ?)",
+            [
+                ("Z-2", "Apple", 100),
+                ("A-1", "Zulu", 100),
+            ],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "products"
+    )
+    table_id = table_identifier(table)
+    code = ColumnRef(table_id, "product_code")
+    name = ColumnRef(table_id, "name")
+    revenue = ColumnRef(table_id, "revenue")
+    plan = QueryPlan(
+        base_table=table_id,
+        selected_columns=(name,),
+        group_by=(code, name),
+        aggregations=(Aggregation("sum", revenue, "total_revenue"),),
+        sort=(Sort("total_revenue", "desc"), Sort(code, "asc")),
+        output_type="table",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.value == [
+        {
+            f"{table_id}.name": "Zulu",
+            "total_revenue": 100,
+        },
+        {
+            f"{table_id}.name": "Apple",
+            "total_revenue": 100,
+        },
+    ]
+    submission = json.loads(
+        serialize_submission_record("q-ranked", result.answer, plan=plan)
+    )
+    assert submission["answer"] == {
+        "columns": ["name", "total_revenue"],
+        "rows": [["Zulu", 100], ["Apple", 100]],
+    }
+
+
 def test_csv_plan_uses_explicit_locale_normalization_without_guessing(
     tmp_path: Path,
 ) -> None:

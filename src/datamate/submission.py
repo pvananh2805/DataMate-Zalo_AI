@@ -82,11 +82,7 @@ def _date_value(value: object) -> str:
 def _table_column_labels(plan: QueryPlan | None) -> dict[str, str] | None:
     if plan is None:
         return None
-    references = (
-        plan.group_by
-        if plan.aggregations or plan.calculations or plan.group_by
-        else plan.selected_columns
-    )
+    references = plan.selected_columns or plan.group_by
     keys = [f"{ref.table}.{ref.column}" for ref in references]
     labels = [ref.column for ref in references]
     aliases = [item.alias for item in plan.time_buckets]

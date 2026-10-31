@@ -74,7 +74,25 @@ def _answer_value(
     plan: QueryPlan,
 ) -> object:
     if answer_type == "table":
-        return list(result.rows)
+        rows = list(result.rows)
+        if plan.selected_columns:
+            output_keys = [
+                f"{ref.table}.{ref.column}"
+                for ref in plan.selected_columns
+            ]
+            output_keys.extend(bucket.alias for bucket in plan.time_buckets)
+            output_keys.extend(item.alias for item in plan.aggregations)
+            output_keys.extend(item.alias for item in plan.calculations)
+            try:
+                return [
+                    {key: row[key] for key in output_keys}
+                    for row in rows
+                ]
+            except KeyError as exc:
+                raise PipelineError(
+                    f"table output column is unavailable: {exc.args[0]}"
+                ) from exc
+        return rows
     if answer_type == "list":
         if plan.selected_columns:
             if len(plan.selected_columns) != 1:

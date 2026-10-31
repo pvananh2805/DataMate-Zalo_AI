@@ -566,7 +566,11 @@ def test_table_evaluation_normalizes_internal_run_log_rows(
                 "question_id": "q1",
                 "query_plan": {
                     "base_table": "sales",
+                    "selected_columns": [
+                        {"table": "sales", "column": "name"},
+                    ],
                     "group_by": [
+                        {"table": "sales", "column": "product_code"},
                         {"table": "sales", "column": "name"},
                     ],
                     "aggregations": [

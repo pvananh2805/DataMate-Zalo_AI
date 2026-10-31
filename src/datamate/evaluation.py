@@ -269,11 +269,7 @@ def _plan_table_columns(plan: object) -> list[str]:
         for items in (aggregations, calculations, time_buckets, group_by, selected)
     ):
         return []
-    references = (
-        group_by
-        if aggregations or calculations or group_by
-        else selected
-    )
+    references = selected or group_by
     columns = [
         f"{item['table']}.{item['column']}"
         for item in references
