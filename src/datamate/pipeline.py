@@ -184,6 +184,15 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
         references.update(item.column for item in aggregation.filters)
         if aggregation.time_range is not None:
             references.add(aggregation.time_range.column)
+        if aggregation.unit_conversion is not None:
+            references.update(
+                (
+                    aggregation.unit_conversion.source_unit,
+                    aggregation.unit_conversion.base_unit,
+                    aggregation.unit_conversion.large_unit,
+                    aggregation.unit_conversion.factor,
+                )
+            )
     if plan.time_range is not None:
         references.add(plan.time_range.column)
     for join in plan.joins:
@@ -207,6 +216,17 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
         )
         if has_time_bucket:
             filter_summary += "; time_bucket=yes"
+        conversion_targets = sorted(
+            {
+                aggregation.unit_conversion.target_unit
+                for aggregation in plan.aggregations
+                if aggregation.unit_conversion is not None
+            }
+        )
+        if conversion_targets:
+            filter_summary += (
+                "; unit_conversion_to=" + ",".join(conversion_targets)
+            )
         evidence.append(
             Evidence(
                 source_table=table,

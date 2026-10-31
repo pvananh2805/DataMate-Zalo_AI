@@ -12,6 +12,7 @@ from datamate.query_plan import (
     Sort,
     TimeBucket,
     TimeRange,
+    UnitConversion,
     validate_query_plan,
 )
 
@@ -222,6 +223,65 @@ def test_ratio_rounding_places_are_bounded_and_only_apply_to_ratio() -> None:
 
     assert any("integer from 0 to 12" in issue for issue in error.value.issues)
     assert any("only for ratio" in issue for issue in error.value.issues)
+
+
+def test_unit_conversion_requires_sum_and_valid_columns() -> None:
+    orders = "orders.csv::orders"
+    products = "products.xlsx::Units"
+    catalog = {
+        orders: {"customer_id", "amount", "unit"},
+        products: {"customer_id", "base_unit", "large_unit", "factor"},
+    }
+    conversion = UnitConversion(
+        source_unit=ColumnRef(orders, "unit"),
+        base_unit=ColumnRef(products, "base_unit"),
+        large_unit=ColumnRef(products, "large_unit"),
+        factor=ColumnRef(products, "factor"),
+        target_unit="kg",
+    )
+    valid_plan = QueryPlan(
+        base_table=orders,
+        joins=(
+            Join(
+                ColumnRef(orders, "customer_id"),
+                ColumnRef(products, "customer_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(orders, "amount"),
+                "quantity",
+                unit_conversion=conversion,
+            ),
+        ),
+    )
+    validate_query_plan(valid_plan, catalog)
+
+    invalid_plan = QueryPlan(
+        base_table=orders,
+        joins=(
+            Join(
+                ColumnRef(orders, "customer_id"),
+                ColumnRef(products, "customer_id"),
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "count",
+                None,
+                "count",
+                unit_conversion=conversion,
+            ),
+        ),
+    )
+    with pytest.raises(
+        PlanValidationError,
+        match="unit conversion is supported only for sum",
+    ) as error:
+        validate_query_plan(invalid_plan, catalog)
+    assert any("must be left joins" in issue for issue in error.value.issues)
 
 
 def test_plan_rejects_unknown_time_bucket_columns_and_granularities() -> None:

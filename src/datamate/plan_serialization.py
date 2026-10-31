@@ -17,6 +17,7 @@ from .query_plan import (
     Sort,
     TimeBucket,
     TimeRange,
+    UnitConversion,
 )
 
 
@@ -92,6 +93,21 @@ def _time_range_from_data(value: object, context: str) -> TimeRange:
             time_data.get("inclusive_end", True),
             f"{context}.inclusive_end",
         ),
+    )
+
+
+def _unit_conversion_from_data(value: object, context: str) -> UnitConversion:
+    data = _object(
+        value,
+        context,
+        {"source_unit", "base_unit", "large_unit", "factor", "target_unit"},
+    )
+    return UnitConversion(
+        source_unit=_column_ref(data.get("source_unit"), f"{context}.source_unit"),
+        base_unit=_column_ref(data.get("base_unit"), f"{context}.base_unit"),
+        large_unit=_column_ref(data.get("large_unit"), f"{context}.large_unit"),
+        factor=_column_ref(data.get("factor"), f"{context}.factor"),
+        target_unit=_string(data.get("target_unit"), f"{context}.target_unit"),
     )
 
 
@@ -194,7 +210,14 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         aggregation = _object(
             item,
             context,
-            {"function", "column", "alias", "filters", "time_range"},
+            {
+                "function",
+                "column",
+                "alias",
+                "filters",
+                "time_range",
+                "unit_conversion",
+            },
         )
         column_value = aggregation.get("column")
         scoped_filters = tuple(
@@ -204,6 +227,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
             )
         )
         time_range_value = aggregation.get("time_range")
+        conversion_value = aggregation.get("unit_conversion")
         aggregations.append(
             Aggregation(
                 function=_string(
@@ -222,6 +246,14 @@ def query_plan_from_dict(value: object) -> QueryPlan:
                     else _time_range_from_data(
                         time_range_value,
                         f"{context}.time_range",
+                    )
+                ),
+                unit_conversion=(
+                    None
+                    if conversion_value is None
+                    else _unit_conversion_from_data(
+                        conversion_value,
+                        f"{context}.unit_conversion",
                     )
                 ),
             )

@@ -15,6 +15,7 @@ from datamate.query_plan import (
     Sort,
     TimeBucket,
     TimeRange,
+    UnitConversion,
 )
 
 
@@ -378,6 +379,126 @@ def test_ratio_rounding_places_use_half_up_for_monetary_averages() -> None:
     )
 
     assert result.rows[0]["average_order_value"] == Decimal(18)
+
+
+def test_sum_converts_large_units_to_requested_product_base_unit() -> None:
+    sales = "sales"
+    products = "products"
+    product_id = ColumnRef(sales, "product_id")
+    quantity = ColumnRef(sales, "quantity")
+    unit = ColumnRef(sales, "unit")
+    plan = QueryPlan(
+        base_table=sales,
+        joins=(
+            Join(product_id, ColumnRef(products, "product_id"), kind="left"),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                quantity,
+                "quantity_in_base_units",
+                unit_conversion=UnitConversion(
+                    source_unit=unit,
+                    base_unit=ColumnRef(products, "base_unit"),
+                    large_unit=ColumnRef(products, "large_unit"),
+                    factor=ColumnRef(products, "factor"),
+                    target_unit="kg",
+                ),
+            ),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={
+            sales: ("product_id", "quantity", "unit"),
+            products: ("product_id", "base_unit", "large_unit", "factor"),
+        },
+        sources={
+            sales: [
+                ("A", Decimal(2), "Bag"),
+                ("A", Decimal(3), "kg"),
+                ("B", Decimal(4), "box"),
+                ("B", Decimal(2), "pc"),
+                ("C", Decimal(3), "kg"),
+            ],
+            products: [
+                ("A", "kg", "bag", Decimal(50)),
+                ("B", "pc", "box", Decimal(12)),
+            ],
+        },
+    )
+
+    assert result.rows == ({"quantity_in_base_units": Decimal(106)},)
+
+
+def test_unit_conversion_rejects_unknown_units_and_duplicate_lookups() -> None:
+    sales = "sales"
+    products = "products"
+    product_id = ColumnRef(sales, "product_id")
+    plan = QueryPlan(
+        base_table=sales,
+        joins=(
+            Join(product_id, ColumnRef(products, "product_id"), kind="left"),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(sales, "quantity"),
+                "quantity",
+                unit_conversion=UnitConversion(
+                    source_unit=ColumnRef(sales, "unit"),
+                    base_unit=ColumnRef(products, "base_unit"),
+                    large_unit=ColumnRef(products, "large_unit"),
+                    factor=ColumnRef(products, "factor"),
+                    target_unit="kg",
+                ),
+            ),
+        ),
+    )
+    catalog = {
+        sales: ("product_id", "quantity", "unit"),
+        products: ("product_id", "base_unit", "large_unit", "factor"),
+    }
+
+    with pytest.raises(QueryExecutionError, match="Cannot convert source unit"):
+        execute_query_plan(
+            plan,
+            catalog=catalog,
+            sources={
+                sales: [("A", Decimal(2), "carton")],
+                products: [("A", "kg", "bag", Decimal(50))],
+            },
+        )
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="Unit-conversion lookup tables must have unique join keys",
+    ):
+        execute_query_plan(
+            plan,
+            catalog=catalog,
+            sources={
+                sales: [("A", Decimal(2), "bag")],
+                products: [
+                    ("A", "kg", "bag", Decimal(50)),
+                    ("A", "kg", "bag", Decimal(100)),
+                ],
+            },
+        )
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="Unit conversion factor.*must be positive",
+    ):
+        execute_query_plan(
+            plan,
+            catalog=catalog,
+            sources={
+                sales: [("A", Decimal(2), "bag")],
+                products: [("A", "kg", "bag", Decimal(0))],
+            },
+        )
 
 
 def test_percentage_calculations_round_half_up_to_two_decimal_places() -> None:

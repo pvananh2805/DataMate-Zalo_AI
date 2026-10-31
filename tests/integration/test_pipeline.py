@@ -24,8 +24,10 @@ from datamate.query_plan import (
     ColumnRef,
     Filter,
     GroupFilter,
+    Join,
     PlanValidationError,
     QueryPlan,
+    UnitConversion,
     Sort,
     TimeBucket,
     TimeRange,
@@ -565,6 +567,80 @@ def test_pipeline_calculates_rounded_average_revenue_per_valid_order(
 
     assert no_eligible_orders.answer.answer_type == "unanswerable"
     assert no_eligible_orders.answer.status == "insufficient_data"
+
+
+def test_pipeline_converts_sales_units_using_joined_product_catalog(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "unit-conversion-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE sales "
+            "(product_id TEXT, quantity NUMERIC, unit TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE products "
+            "(product_id TEXT, base_unit TEXT, large_unit TEXT, factor NUMERIC)"
+        )
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?, ?)",
+            [
+                ("A", 2, "bag"),
+                ("A", 3, "kg"),
+                ("B", 4, "box"),
+                ("B", 2, "pc"),
+                ("C", 3, "kg"),
+            ],
+        )
+        connection.executemany(
+            "INSERT INTO products VALUES (?, ?, ?, ?)",
+            [
+                ("A", "kg", "bag", 50),
+                ("B", "pc", "box", 12),
+            ],
+        )
+    tables = {
+        table.name: table
+        for table in BusinessDataLoader(business).discover()
+    }
+    sales_id = table_identifier(tables["sales"])
+    products_id = table_identifier(tables["products"])
+    plan = QueryPlan(
+        base_table=sales_id,
+        joins=(
+            Join(
+                ColumnRef(sales_id, "product_id"),
+                ColumnRef(products_id, "product_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(sales_id, "quantity"),
+                "quantity_in_kg",
+                unit_conversion=UnitConversion(
+                    source_unit=ColumnRef(sales_id, "unit"),
+                    base_unit=ColumnRef(products_id, "base_unit"),
+                    large_unit=ColumnRef(products_id, "large_unit"),
+                    factor=ColumnRef(products_id, "factor"),
+                    target_unit="kg",
+                ),
+            ),
+        ),
+        output_type="number",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.value == 106
+    assert result.answer.status == "answered"
+    assert result.answer.evidence[0].columns
+    assert any(
+        "unit_conversion_to=kg" in item.filter_summary
+        for item in result.answer.evidence
+    )
 
 
 def test_pipeline_counts_groups_meeting_distinct_order_threshold(

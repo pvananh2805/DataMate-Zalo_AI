@@ -105,6 +105,18 @@ class Aggregation:
     alias: str
     filters: tuple[Filter, ...] = ()
     time_range: TimeRange | None = None
+    unit_conversion: UnitConversion | None = None
+
+
+@dataclass(frozen=True)
+class UnitConversion:
+    """Convert a row quantity from its recorded unit into a product base unit."""
+
+    source_unit: ColumnRef
+    base_unit: ColumnRef
+    large_unit: ColumnRef
+    factor: ColumnRef
+    target_unit: str
 
 
 @dataclass(frozen=True)
@@ -224,6 +236,32 @@ def validate_query_plan(
         check_column(join.right, "join")
         if join.left.table == join.right.table:
             issues.append("join must connect two different table references")
+    for aggregation in plan.aggregations:
+        conversion = aggregation.unit_conversion
+        if conversion is None:
+            continue
+        dimension_tables = {
+            conversion.base_unit.table,
+            conversion.large_unit.table,
+            conversion.factor.table,
+        }
+        joined_tables = {plan.base_table}
+        for join in plan.joins:
+            new_table = (
+                join.right.table
+                if join.right.table not in joined_tables
+                else join.left.table
+            )
+            if (
+                new_table in dimension_tables
+                and new_table != conversion.source_unit.table
+                and join.kind != "left"
+            ):
+                issues.append(
+                    "unit conversion lookup joins must be left joins so unmapped "
+                    "base units are preserved"
+                )
+            joined_tables.update((join.left.table, join.right.table))
 
     for ref in plan.selected_columns:
         check_column(ref, "selected column")
@@ -300,6 +338,19 @@ def validate_query_plan(
             issues.append(f"{aggregation.function} requires a column")
         elif aggregation.column is not None:
             check_column(aggregation.column, "aggregation")
+        if aggregation.unit_conversion is not None:
+            conversion = aggregation.unit_conversion
+            if aggregation.function != "sum":
+                issues.append("unit conversion is supported only for sum")
+            for ref in (
+                conversion.source_unit,
+                conversion.base_unit,
+                conversion.large_unit,
+                conversion.factor,
+            ):
+                check_column(ref, "unit conversion")
+            if not isinstance(conversion.target_unit, str) or not conversion.target_unit.strip():
+                issues.append("unit conversion target_unit must be non-empty text")
         for filter_item in aggregation.filters:
             check_filter(filter_item, f"aggregation {aggregation.alias!r} filter")
         if aggregation.time_range is not None:

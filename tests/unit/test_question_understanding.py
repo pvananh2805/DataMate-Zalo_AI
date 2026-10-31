@@ -47,6 +47,13 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
         "aggregations": [
             {
                 **PLAN["aggregations"][0],
+                "unit_conversion": {
+                    "source_unit": {"table": TABLE, "column": "unit"},
+                    "base_unit": {"table": TABLE, "column": "base_unit"},
+                    "large_unit": {"table": TABLE, "column": "large_unit"},
+                    "factor": {"table": TABLE, "column": "factor"},
+                    "target_unit": "kg",
+                },
                 "time_range": {
                     "column": {"table": TABLE, "column": "sold_at"},
                     "start": "2025-12-01",
@@ -91,6 +98,8 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert aggregation.time_range is not None
     assert aggregation.time_range.start == "2025-12-01"
     assert aggregation.filters[0].value == "completed"
+    assert aggregation.unit_conversion is not None
+    assert aggregation.unit_conversion.target_unit == "kg"
     assert plan.calculations[0].rounding_places == 0
     assert plan.time_buckets[0].granularity == "month"
     assert plan.group_filters[0].alias == "total"
@@ -139,6 +148,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "business_rules hiện chưa có executor" in prompt
     assert "count_distinct" in prompt
     assert "không AVG trực tiếp" in prompt
+    assert "unit_conversion khai báo" in prompt
     assert "count_groups=true" in prompt
     assert "mã tăng dần" in prompt
     assert "time_bucket làm giá trị scalar" in prompt

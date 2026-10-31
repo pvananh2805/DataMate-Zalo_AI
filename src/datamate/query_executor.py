@@ -17,6 +17,7 @@ from .query_plan import (
     QueryPlan,
     TimeBucket,
     TimeRange,
+    UnitConversion,
     validate_query_plan,
 )
 
@@ -255,6 +256,72 @@ def _exact_subtract(left: Decimal, right: Decimal) -> Decimal:
         return left - right
 
 
+def _exact_multiply(left: Decimal, right: Decimal) -> Decimal:
+    with localcontext() as decimal_context:
+        decimal_context.prec = max(
+            decimal_context.prec,
+            len(left.as_tuple().digits) + len(right.as_tuple().digits) + 2,
+        )
+        return left * right
+
+
+def _same_unit(left: object, right: object) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    return left.strip().casefold() == right.strip().casefold()
+
+
+def _unit_matches_target(
+    conversion: UnitConversion,
+    context: Mapping[str, Row | None],
+    column_indexes: Mapping[str, Mapping[str, int]],
+) -> bool:
+    base_unit = _row_value(context, column_indexes, conversion.base_unit)
+    if base_unit is None:
+        source_unit = _row_value(context, column_indexes, conversion.source_unit)
+        return _same_unit(source_unit, conversion.target_unit)
+    return _same_unit(base_unit, conversion.target_unit)
+
+
+def _convert_quantity(
+    value: object,
+    conversion: UnitConversion,
+    context: Mapping[str, Row | None],
+    column_indexes: Mapping[str, Mapping[str, int]],
+    *,
+    alias: str,
+) -> Decimal | None:
+    if value is None:
+        return None
+    base_unit = _row_value(context, column_indexes, conversion.base_unit)
+    source_unit = _row_value(context, column_indexes, conversion.source_unit)
+    if base_unit is None:
+        if not _same_unit(source_unit, conversion.target_unit):
+            raise QueryExecutionError(
+                f"Missing unit conversion for aggregation {alias!r}"
+            )
+        factor = Decimal(1)
+    elif not _same_unit(base_unit, conversion.target_unit):
+        return None
+    elif _same_unit(source_unit, base_unit):
+        factor = Decimal(1)
+    elif _same_unit(
+        source_unit,
+        _row_value(context, column_indexes, conversion.large_unit),
+    ):
+        raw_factor = _row_value(context, column_indexes, conversion.factor)
+        factor = _to_decimal(raw_factor, alias=f"{alias} unit factor")
+        if factor <= 0:
+            raise QueryExecutionError(
+                f"Unit conversion factor for {alias!r} must be positive"
+            )
+    else:
+        raise QueryExecutionError(
+            f"Cannot convert source unit for aggregation {alias!r}"
+        )
+    return _exact_multiply(_to_decimal(value, alias=alias), factor)
+
+
 def _aggregate(
     rows: Iterable[Mapping[str, Row | None]],
     plan: QueryPlan,
@@ -287,6 +354,14 @@ def _aggregate(
                         aggregation.time_range.column,
                     ),
                     aggregation.time_range,
+                )
+            )
+            and (
+                aggregation.unit_conversion is None
+                or _unit_matches_target(
+                    aggregation.unit_conversion,
+                    context,
+                    column_indexes,
                 )
             )
             for aggregation in plan.aggregations
@@ -333,6 +408,14 @@ def _aggregate(
                 if aggregation.column is None
                 else _row_value(context, column_indexes, aggregation.column)
             )
+            if aggregation.unit_conversion is not None:
+                value = _convert_quantity(
+                    value,
+                    aggregation.unit_conversion,
+                    context,
+                    column_indexes,
+                    alias=aggregation.alias,
+                )
             if aggregation.function == "count":
                 if aggregation.column is None or value is not None:
                     state.count += 1
@@ -551,6 +634,18 @@ def execute_query_plan(
         }
     validate_query_plan(plan, schema_sets)
 
+    unit_conversion_tables = {
+        ref.table
+        for aggregation in plan.aggregations
+        if aggregation.unit_conversion is not None
+        for ref in (
+            aggregation.unit_conversion.source_unit,
+            aggregation.unit_conversion.base_unit,
+            aggregation.unit_conversion.large_unit,
+            aggregation.unit_conversion.factor,
+        )
+    }
+
     involved_tables = {plan.base_table}
     for join in plan.joins:
         involved_tables.update((join.left.table, join.right.table))
@@ -616,6 +711,10 @@ def execute_query_plan(
             key = row[key_index]
             if key is not None:
                 try:
+                    if new_table in unit_conversion_tables and key in index:
+                        raise QueryExecutionError(
+                            "Unit-conversion lookup tables must have unique join keys"
+                        )
                     index[key].append(row)
                 except TypeError as exc:
                     raise QueryExecutionError(
