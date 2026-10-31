@@ -232,7 +232,18 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         _sequence(data.get("calculations", []), "calculations")
     ):
         context = f"calculations[{index}]"
-        calculation = _object(item, context, {"function", "left", "right", "alias"})
+        calculation = _object(
+            item,
+            context,
+            {"function", "left", "right", "alias", "rounding_places"},
+        )
+        rounding_places = calculation.get("rounding_places")
+        if rounding_places is not None and (
+            isinstance(rounding_places, bool) or not isinstance(rounding_places, int)
+        ):
+            raise QueryPlanFormatError(
+                f"{context}.rounding_places must be an integer or null"
+            )
         calculations.append(
             Calculation(
                 function=_string(
@@ -241,6 +252,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
                 left=_string(calculation.get("left"), f"{context}.left"),
                 right=_string(calculation.get("right"), f"{context}.right"),
                 alias=_string(calculation.get("alias"), f"{context}.alias"),
+                rounding_places=rounding_places,
             )
         )
 

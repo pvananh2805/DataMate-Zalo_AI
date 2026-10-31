@@ -483,9 +483,8 @@ def _calculate(
                 row[calculation.alias] = _exact_subtract(left_number, right_number)
                 continue
             if right_number == 0:
-                raise QueryExecutionError(
-                    f"Calculation {calculation.alias!r} divides by zero"
-                )
+                row[calculation.alias] = None
+                continue
             numerator = (
                 _exact_subtract(left_number, right_number)
                 if calculation.function == "percent_change"
@@ -506,6 +505,11 @@ def _calculate(
                     )
                     row[calculation.alias] = calculated.quantize(
                         Decimal("0.01"),
+                        rounding=ROUND_HALF_UP,
+                    )
+                elif calculation.rounding_places is not None:
+                    row[calculation.alias] = calculated.quantize(
+                        Decimal(1).scaleb(-calculation.rounding_places),
                         rounding=ROUND_HALF_UP,
                     )
                 else:

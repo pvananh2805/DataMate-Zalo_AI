@@ -189,6 +189,41 @@ def test_group_count_requires_valid_aggregate_filter_and_numeric_output() -> Non
     assert any("requires number output" in issue for issue in error.value.issues)
 
 
+def test_ratio_rounding_places_are_bounded_and_only_apply_to_ratio() -> None:
+    table = "orders.csv::orders"
+    amount = ColumnRef(table, "amount")
+    valid_plan = QueryPlan(
+        base_table=table,
+        aggregations=(
+            Aggregation("sum", amount, "revenue"),
+            Aggregation("count", None, "orders"),
+        ),
+        calculations=(
+            Calculation("ratio", "revenue", "orders", "average", rounding_places=0),
+        ),
+    )
+    validate_query_plan(valid_plan, CATALOG)
+
+    invalid_plan = QueryPlan(
+        base_table=table,
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        calculations=(
+            Calculation(
+                "difference",
+                "revenue",
+                "revenue",
+                "difference",
+                rounding_places=13,
+            ),
+        ),
+    )
+    with pytest.raises(PlanValidationError) as error:
+        validate_query_plan(invalid_plan, CATALOG)
+
+    assert any("integer from 0 to 12" in issue for issue in error.value.issues)
+    assert any("only for ratio" in issue for issue in error.value.issues)
+
+
 def test_plan_rejects_unknown_time_bucket_columns_and_granularities() -> None:
     orders = "orders.csv::orders"
     plan = QueryPlan(

@@ -61,6 +61,15 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
                 ],
             }
         ],
+        "calculations": [
+            {
+                "function": "ratio",
+                "left": "total",
+                "right": "total",
+                "alias": "average",
+                "rounding_places": 0,
+            }
+        ],
         "time_buckets": [
             {
                 "column": {"table": TABLE, "column": "sold_at"},
@@ -82,6 +91,7 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert aggregation.time_range is not None
     assert aggregation.time_range.start == "2025-12-01"
     assert aggregation.filters[0].value == "completed"
+    assert plan.calculations[0].rounding_places == 0
     assert plan.time_buckets[0].granularity == "month"
     assert plan.group_filters[0].alias == "total"
     assert plan.count_groups is True
@@ -128,6 +138,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
     assert "count_distinct" in prompt
+    assert "không AVG trực tiếp" in prompt
     assert "count_groups=true" in prompt
     assert "mã tăng dần" in prompt
     assert "time_bucket làm giá trị scalar" in prompt

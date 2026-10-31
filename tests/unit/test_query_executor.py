@@ -301,7 +301,7 @@ def test_decimal_addition_preserves_small_terms_at_large_exponents() -> None:
     assert result.rows[0]["total"] == Decimal("1" + "0" * 99 + "1")
 
 
-def test_ratio_and_percent_change_are_deterministic_and_guard_zero_division() -> None:
+def test_ratio_and_percent_change_are_deterministic_and_handle_zero_denominator() -> None:
     table = "periods"
     current = ColumnRef(table, "current")
     previous = ColumnRef(table, "previous")
@@ -341,12 +341,43 @@ def test_ratio_and_percent_change_are_deterministic_and_guard_zero_division() ->
         sources={table: [(Decimal("80"), Decimal("100"))]},
     )
     assert decreasing.rows[0]["growth_percent"] == Decimal("-20")
-    with pytest.raises(QueryExecutionError, match="divides by zero"):
-        execute_query_plan(
-            plan,
-            catalog=arguments["catalog"],
-            sources={table: [(Decimal("120"), Decimal("0"))]},
-        )
+    zero_denominator = execute_query_plan(
+        plan,
+        catalog=arguments["catalog"],
+        sources={table: [(Decimal("120"), Decimal("0"))]},
+    )
+    assert zero_denominator.rows[0]["growth_percent"] is None
+    assert zero_denominator.rows[0]["ratio"] is None
+
+
+def test_ratio_rounding_places_use_half_up_for_monetary_averages() -> None:
+    table = "orders"
+    total = ColumnRef(table, "total")
+    count = ColumnRef(table, "count")
+    plan = QueryPlan(
+        base_table=table,
+        aggregations=(
+            Aggregation("sum", total, "revenue"),
+            Aggregation("sum", count, "orders"),
+        ),
+        calculations=(
+            Calculation(
+                "ratio",
+                "revenue",
+                "orders",
+                "average_order_value",
+                rounding_places=0,
+            ),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("total", "count")},
+        sources={table: [(Decimal(35), Decimal(2))]},
+    )
+
+    assert result.rows[0]["average_order_value"] == Decimal(18)
 
 
 def test_percentage_calculations_round_half_up_to_two_decimal_places() -> None:

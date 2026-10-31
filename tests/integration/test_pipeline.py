@@ -476,6 +476,97 @@ def test_pipeline_revenue_excludes_cancelled_and_returned_orders(
     assert result.answer.status == "answered"
 
 
+def test_pipeline_calculates_rounded_average_revenue_per_valid_order(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "average-order-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE order_lines "
+            "(order_id TEXT, status TEXT, order_date TEXT, line_total INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO order_lines VALUES (?, ?, ?, ?)",
+            [
+                ("O-1", "completed", "2026-01-01", 20),
+                ("O-1", "completed", "2026-01-01", 10),
+                ("O-2", "completed", "2026-01-02", 5),
+                ("O-3", "cancelled", "2026-01-03", 100),
+                ("O-4", "returned", "2026-01-04", 100),
+            ],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "order_lines"
+    )
+    table_id = table_identifier(table)
+    order_id = ColumnRef(table_id, "order_id")
+    status = ColumnRef(table_id, "status")
+    line_total = ColumnRef(table_id, "line_total")
+    eligible_order_filters = (
+        Filter(status, "ne", "cancelled"),
+        Filter(status, "ne", "returned"),
+    )
+    plan = QueryPlan(
+        base_table=table_id,
+        aggregations=(
+            Aggregation(
+                "sum",
+                line_total,
+                "revenue",
+                filters=eligible_order_filters,
+            ),
+            Aggregation(
+                "count_distinct",
+                order_id,
+                "orders",
+                filters=eligible_order_filters,
+            ),
+        ),
+        calculations=(
+            Calculation(
+                "ratio",
+                "revenue",
+                "orders",
+                "average_order_revenue",
+                rounding_places=0,
+            ),
+        ),
+        output_type="number",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.value == 18
+    assert result.answer.status == "answered"
+
+    no_eligible_orders_plan = QueryPlan(
+        base_table=table_id,
+        aggregations=(
+            Aggregation(
+                "sum",
+                line_total,
+                "revenue",
+                filters=(Filter(status, "eq", "unknown"),),
+            ),
+            Aggregation(
+                "count_distinct",
+                order_id,
+                "orders",
+                filters=(Filter(status, "eq", "unknown"),),
+            ),
+        ),
+        calculations=plan.calculations,
+        output_type="number",
+    )
+    no_eligible_orders = execute_business_plan(business, no_eligible_orders_plan)
+
+    assert no_eligible_orders.answer.answer_type == "unanswerable"
+    assert no_eligible_orders.answer.status == "insufficient_data"
+
+
 def test_pipeline_counts_groups_meeting_distinct_order_threshold(
     tmp_path: Path,
 ) -> None:

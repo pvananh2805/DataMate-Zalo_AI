@@ -124,6 +124,7 @@ class Calculation:
     left: str
     right: str
     alias: str
+    rounding_places: int | None = None
 
 
 @dataclass(frozen=True)
@@ -319,6 +320,15 @@ def validate_query_plan(
             issues.append(
                 f"calculation alias is empty or duplicated: {calculation.alias!r}"
             )
+        if calculation.rounding_places is not None:
+            if (
+                isinstance(calculation.rounding_places, bool)
+                or not isinstance(calculation.rounding_places, int)
+                or not 0 <= calculation.rounding_places <= 12
+            ):
+                issues.append("rounding_places must be an integer from 0 to 12")
+            if calculation.function != "ratio":
+                issues.append("rounding_places is supported only for ratio")
         aliases.add(calculation.alias)
 
     group_filter_aliases = {item.alias for item in plan.aggregations} | {
