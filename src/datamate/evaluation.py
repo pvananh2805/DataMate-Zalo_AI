@@ -321,22 +321,23 @@ def _table_equal(
     else:
         column_indexes = list(range(len(gold_columns)))
 
-    unmatched_rows = list(predicted["rows"])
-    if len(gold["rows"]) != len(unmatched_rows):
+    predicted_rows = list(predicted["rows"])
+    if len(gold["rows"]) != len(predicted_rows):
         return False
     table_aliases = aliases if isinstance(aliases, list) else []
     if table_aliases and len(table_aliases) != len(gold["rows"]):
         return False
+    candidates_by_gold: list[list[int]] = []
     for row_index, gold_row in enumerate(gold["rows"]):
         row_aliases = (
             table_aliases[row_index]
             if table_aliases and isinstance(table_aliases[row_index], list)
             else []
         )
-        match_index = next(
-            (
-                index
-                for index, predicted_row in enumerate(unmatched_rows)
+        candidates_by_gold.append(
+            [
+                predicted_index
+                for predicted_index, predicted_row in enumerate(predicted_rows)
                 if all(
                     (
                         _string_matches(
@@ -353,13 +354,42 @@ def _table_equal(
                     )
                     for position, gold_value in enumerate(gold_row)
                 )
-            ),
-            None,
+            ]
         )
-        if match_index is None:
+    matched_gold_by_prediction = [-1] * len(predicted_rows)
+    matched_prediction_by_gold = [-1] * len(gold["rows"])
+    for start_gold in range(len(gold["rows"])):
+        queue = [start_gold]
+        visited_gold = {start_gold}
+        parent_gold_by_prediction: dict[int, int] = {}
+        free_prediction: int | None = None
+        cursor = 0
+        while cursor < len(queue) and free_prediction is None:
+            gold_index = queue[cursor]
+            cursor += 1
+            for prediction_index in candidates_by_gold[gold_index]:
+                if prediction_index in parent_gold_by_prediction:
+                    continue
+                parent_gold_by_prediction[prediction_index] = gold_index
+                matched_gold = matched_gold_by_prediction[prediction_index]
+                if matched_gold == -1:
+                    free_prediction = prediction_index
+                    break
+                if matched_gold not in visited_gold:
+                    visited_gold.add(matched_gold)
+                    queue.append(matched_gold)
+        if free_prediction is None:
             return False
-        unmatched_rows.pop(match_index)
-    return not unmatched_rows
+        prediction_index = free_prediction
+        while True:
+            gold_index = parent_gold_by_prediction[prediction_index]
+            previous_prediction = matched_prediction_by_gold[gold_index]
+            matched_gold_by_prediction[prediction_index] = gold_index
+            matched_prediction_by_gold[gold_index] = prediction_index
+            if previous_prediction == -1:
+                break
+            prediction_index = previous_prediction
+    return True
 
 
 def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:

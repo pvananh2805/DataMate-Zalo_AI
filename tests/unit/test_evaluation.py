@@ -758,3 +758,47 @@ def test_table_aliases_match_row_name_after_unordered_row_matching(
 
     assert report["exact_matches"] == 1
     assert report["aliases_compared_for_table_rows"] is True
+
+
+def test_table_alias_matching_finds_valid_assignment_when_aliases_overlap(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["name", "count"],
+                    "rows": [["Product", 1], ["Product", 1]],
+                },
+                "alias": [["A", "B"], ["A"]],
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["name", "count"],
+                    "rows": [["A", 1], ["B", 1]],
+                },
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
