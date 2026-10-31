@@ -110,7 +110,7 @@ The existing training-only inventory records 3,000 paired questions/answers acro
 
 ## Test evidence and readiness
 
-- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **204 passed in 3.15s**.
+- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **205 passed**.
 - **Targeted model/training tests:** **7 passed**, including the mocked CUDA memory preflight cases.
 - **Targeted sparse-cell tests:** **36 passed** across normalization, replay, and pipeline, including configured fill-down and replay behavior.
 - **CLI/build checks:** all eight CLI `--help` checks, `compileall -q src tests scripts`, `git diff --check`, and UTF-8/trailing-whitespace checks passed.
@@ -153,7 +153,7 @@ Two focused mocked-runtime tests cover rejection before device transfer and the 
 
 Added opt-in `fill_down_group` to the existing per-column coercion policy. A policy can explicitly forward-fill a sparse group key and carry a selected field such as order status only while that key remains the same. Blank values are unchanged unless this policy is configured. Unknown group-column references fail explicitly. The policy is part of logged coercion metadata and replay validation, so a replay reuses the same transformation.
 
-Unit tests cover within-group propagation, group boundary reset, and invalid group references. An integration/replay test confirms that explicitly carried returned-order status excludes the entire order and yields a reproducible answer. Targeted normalization/pipeline/replay tests pass (36), and the full suite passes (204); this is a general primitive, not an automatic rulebook parser, and must only be configured where the source rulebook confirms sparse-cell semantics.
+Unit tests cover within-group propagation, group boundary reset, and invalid group references. Integration tests confirm JSON configuration loading, returned-order exclusion, and deterministic replay. Targeted normalization, inference-config, pipeline, and replay tests pass (40); the full suite passes (205). This is a general primitive, not an automatic rulebook parser, and must only be configured where the source rulebook confirms sparse-cell semantics.
 
 ## Prioritized next work
 

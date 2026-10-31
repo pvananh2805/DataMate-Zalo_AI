@@ -7,11 +7,16 @@ from pathlib import Path
 import pytest
 
 from datamate.data_loader import BusinessDataLoader
+from datamate.normalization import ColumnCoercion
 from datamate.query_plan import Aggregation, ColumnRef
 from datamate.question_understanding import JsonPlanAdapter
 from datamate.run_logging import read_run_records
 from datamate.submission import SubmissionWriter
-from scripts.run_inference import _process_questions, _read_inference_config
+from scripts.run_inference import (
+    _process_questions,
+    _read_coercions,
+    _read_inference_config,
+)
 
 
 def test_inference_config_resolves_relative_paths_from_config_file(
@@ -52,6 +57,44 @@ def test_inference_config_rejects_unknown_fields(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unknown inference configuration fields"):
         _read_inference_config(config_path)
+
+
+def test_coercion_config_reads_explicit_sparse_group_policy(tmp_path: Path) -> None:
+    config_path = tmp_path / "coercions.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "biz_1": {
+                    "orders.csv::orders": {
+                        "order_id": {
+                            "kind": "identifier",
+                            "fill_down_group": "order_id",
+                        },
+                        "status": {
+                            "kind": "text",
+                            "fill_down_group": "order_id",
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    policies = _read_coercions(config_path)
+
+    assert policies == {
+        "biz_1": {
+            ColumnRef("orders.csv::orders", "order_id"): ColumnCoercion(
+                "identifier",
+                fill_down_group="order_id",
+            ),
+            ColumnRef("orders.csv::orders", "status"): ColumnCoercion(
+                "text",
+                fill_down_group="order_id",
+            ),
+        }
+    }
 
 
 def test_inference_processor_integrates_context_logging_and_submission(
