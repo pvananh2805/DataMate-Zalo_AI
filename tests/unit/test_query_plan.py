@@ -237,7 +237,7 @@ def test_unit_conversion_requires_sum_and_valid_columns() -> None:
         base_unit=ColumnRef(products, "base_unit"),
         large_unit=ColumnRef(products, "large_unit"),
         factor=ColumnRef(products, "factor"),
-        target_unit="kg",
+        target_unit=None,
     )
     valid_plan = QueryPlan(
         base_table=orders,

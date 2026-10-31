@@ -432,6 +432,102 @@ def test_sum_converts_large_units_to_requested_product_base_unit() -> None:
     assert result.rows == ({"quantity_in_base_units": Decimal(106)},)
 
 
+def test_sum_converts_each_product_to_its_own_base_unit() -> None:
+    sales = "sales"
+    products = "products"
+    plan = QueryPlan(
+        base_table=sales,
+        joins=(
+            Join(
+                ColumnRef(sales, "product_id"),
+                ColumnRef(products, "product_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(sales, "quantity"),
+                "quantity_in_product_base_units",
+                unit_conversion=UnitConversion(
+                    source_unit=ColumnRef(sales, "unit"),
+                    base_unit=ColumnRef(products, "base_unit"),
+                    large_unit=ColumnRef(products, "large_unit"),
+                    factor=ColumnRef(products, "factor"),
+                    target_unit=None,
+                ),
+            ),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={
+            sales: ("product_id", "quantity", "unit"),
+            products: ("product_id", "base_unit", "large_unit", "factor"),
+        },
+        sources={
+            sales: [
+                ("A", Decimal(2), "bag"),
+                ("A", Decimal(3), "kg"),
+                ("B", Decimal(4), "box"),
+                ("B", Decimal(2), "pc"),
+                ("C", Decimal(5), "bottle"),
+            ],
+            products: [
+                ("A", "kg", "bag", Decimal(50)),
+                ("B", "pc", "box", Decimal(12)),
+            ],
+        },
+    )
+
+    assert result.rows == (
+        {"quantity_in_product_base_units": Decimal(158)},
+    )
+
+
+def test_unit_conversion_rejects_missing_transaction_unit() -> None:
+    sales = "sales"
+    products = "products"
+    plan = QueryPlan(
+        base_table=sales,
+        joins=(
+            Join(
+                ColumnRef(sales, "product_id"),
+                ColumnRef(products, "product_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(sales, "quantity"),
+                "quantity_in_base_units",
+                unit_conversion=UnitConversion(
+                    source_unit=ColumnRef(sales, "unit"),
+                    base_unit=ColumnRef(products, "base_unit"),
+                    large_unit=ColumnRef(products, "large_unit"),
+                    factor=ColumnRef(products, "factor"),
+                    target_unit=None,
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(QueryExecutionError, match="Missing source unit"):
+        execute_query_plan(
+            plan,
+            catalog={
+                sales: ("product_id", "quantity", "unit"),
+                products: ("product_id", "base_unit", "large_unit", "factor"),
+            },
+            sources={
+                sales: [("unknown", Decimal(5), None)],
+                products: [],
+            },
+        )
+
+
 def test_unit_conversion_rejects_unknown_units_and_duplicate_lookups() -> None:
     sales = "sales"
     products = "products"

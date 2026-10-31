@@ -110,13 +110,13 @@ class Aggregation:
 
 @dataclass(frozen=True)
 class UnitConversion:
-    """Convert a row quantity from its recorded unit into a product base unit."""
+    """Convert recorded row quantities using a product's explicit unit mapping."""
 
     source_unit: ColumnRef
     base_unit: ColumnRef
     large_unit: ColumnRef
     factor: ColumnRef
-    target_unit: str
+    target_unit: str | None
 
 
 @dataclass(frozen=True)
@@ -368,8 +368,13 @@ def validate_query_plan(
                 conversion.factor,
             ):
                 check_column(ref, "unit conversion")
-            if not isinstance(conversion.target_unit, str) or not conversion.target_unit.strip():
-                issues.append("unit conversion target_unit must be non-empty text")
+            if conversion.target_unit is not None and (
+                not isinstance(conversion.target_unit, str)
+                or not conversion.target_unit.strip()
+            ):
+                issues.append(
+                    "unit conversion target_unit must be null or non-empty text"
+                )
         for filter_item in aggregation.filters:
             check_filter(filter_item, f"aggregation {aggregation.alias!r} filter")
         if aggregation.time_range is not None:

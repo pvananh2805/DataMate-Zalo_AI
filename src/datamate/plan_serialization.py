@@ -102,12 +102,19 @@ def _unit_conversion_from_data(value: object, context: str) -> UnitConversion:
         context,
         {"source_unit", "base_unit", "large_unit", "factor", "target_unit"},
     )
+    if "target_unit" not in data:
+        raise QueryPlanFormatError(f"{context}.target_unit is required")
+    target_unit_value = data.get("target_unit")
+    if target_unit_value is not None and not isinstance(target_unit_value, str):
+        raise QueryPlanFormatError(
+            f"{context}.target_unit must be null or text"
+        )
     return UnitConversion(
         source_unit=_column_ref(data.get("source_unit"), f"{context}.source_unit"),
         base_unit=_column_ref(data.get("base_unit"), f"{context}.base_unit"),
         large_unit=_column_ref(data.get("large_unit"), f"{context}.large_unit"),
         factor=_column_ref(data.get("factor"), f"{context}.factor"),
-        target_unit=_string(data.get("target_unit"), f"{context}.target_unit"),
+        target_unit=target_unit_value,
     )
 
 

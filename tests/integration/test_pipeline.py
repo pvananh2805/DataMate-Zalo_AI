@@ -625,7 +625,7 @@ def test_pipeline_converts_sales_units_using_joined_product_catalog(
                     base_unit=ColumnRef(products_id, "base_unit"),
                     large_unit=ColumnRef(products_id, "large_unit"),
                     factor=ColumnRef(products_id, "factor"),
-                    target_unit="kg",
+                    target_unit=None,
                 ),
             ),
         ),
@@ -634,11 +634,11 @@ def test_pipeline_converts_sales_units_using_joined_product_catalog(
 
     result = execute_business_plan(business, plan)
 
-    assert result.answer.value == 106
+    assert result.answer.value == 156
     assert result.answer.status == "answered"
     assert result.answer.evidence[0].columns
     assert any(
-        "unit_conversion_to=kg" in item.filter_summary
+        "unit_conversion_to=product_base_unit" in item.filter_summary
         for item in result.answer.evidence
     )
 

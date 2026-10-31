@@ -279,7 +279,13 @@ def _unit_matches_target(
     base_unit = _row_value(context, column_indexes, conversion.base_unit)
     if base_unit is None:
         source_unit = _row_value(context, column_indexes, conversion.source_unit)
+        if not isinstance(source_unit, str) or not source_unit.strip():
+            raise QueryExecutionError("Missing source unit for unit conversion")
+        if conversion.target_unit is None:
+            return True
         return _same_unit(source_unit, conversion.target_unit)
+    if conversion.target_unit is None:
+        return True
     return _same_unit(base_unit, conversion.target_unit)
 
 
@@ -296,12 +302,21 @@ def _convert_quantity(
     base_unit = _row_value(context, column_indexes, conversion.base_unit)
     source_unit = _row_value(context, column_indexes, conversion.source_unit)
     if base_unit is None:
-        if not _same_unit(source_unit, conversion.target_unit):
+        if not isinstance(source_unit, str) or not source_unit.strip():
+            raise QueryExecutionError(
+                f"Missing source unit for aggregation {alias!r}"
+            )
+        if conversion.target_unit is not None and not _same_unit(
+            source_unit, conversion.target_unit
+        ):
             raise QueryExecutionError(
                 f"Missing unit conversion for aggregation {alias!r}"
             )
         factor = Decimal(1)
-    elif not _same_unit(base_unit, conversion.target_unit):
+    elif (
+        conversion.target_unit is not None
+        and not _same_unit(base_unit, conversion.target_unit)
+    ):
         return None
     elif _same_unit(source_unit, base_unit):
         factor = Decimal(1)

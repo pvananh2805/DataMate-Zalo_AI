@@ -107,6 +107,29 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert plan.metadata["reason"] == "monthly total"
 
 
+def test_query_plan_json_accepts_product_specific_base_unit_conversion() -> None:
+    payload = {
+        **PLAN,
+        "aggregations": [
+            {
+                **PLAN["aggregations"][0],
+                "unit_conversion": {
+                    "source_unit": {"table": TABLE, "column": "unit"},
+                    "base_unit": {"table": TABLE, "column": "base_unit"},
+                    "large_unit": {"table": TABLE, "column": "large_unit"},
+                    "factor": {"table": TABLE, "column": "factor"},
+                    "target_unit": None,
+                },
+            }
+        ],
+    }
+
+    plan = query_plan_from_json(json.dumps(payload))
+
+    assert plan.aggregations[0].unit_conversion is not None
+    assert plan.aggregations[0].unit_conversion.target_unit is None
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -149,6 +172,8 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "count_distinct" in prompt
     assert "không AVG trực tiếp" in prompt
     assert "unit_conversion khai báo" in prompt
+    assert "target_unit=null" in prompt
+    assert "đơn vị không có dòng mapping" in prompt
     assert "count_groups=true" in prompt
     assert "mã tăng dần" in prompt
     assert "time_bucket làm giá trị scalar" in prompt

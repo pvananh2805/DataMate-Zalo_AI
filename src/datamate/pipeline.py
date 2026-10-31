@@ -218,7 +218,7 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
             filter_summary += "; time_bucket=yes"
         conversion_targets = sorted(
             {
-                aggregation.unit_conversion.target_unit
+                aggregation.unit_conversion.target_unit or "product_base_unit"
                 for aggregation in plan.aggregations
                 if aggregation.unit_conversion is not None
             }
