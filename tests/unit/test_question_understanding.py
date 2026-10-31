@@ -130,6 +130,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "count_distinct" in prompt
     assert "count_groups=true" in prompt
     assert "mã tăng dần" in prompt
+    assert "time_bucket làm giá trị scalar" in prompt
 
 
 def test_json_plan_adapter_validates_against_discovered_schema() -> None:

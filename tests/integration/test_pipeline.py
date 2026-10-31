@@ -553,6 +553,63 @@ def test_pipeline_counts_groups_meeting_distinct_order_threshold(
     assert no_match_result.answer.status == "answered"
 
 
+def test_pipeline_returns_ranked_group_key_as_scalar_answer(tmp_path: Path) -> None:
+    business = tmp_path / "top-day-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE sales (sold_at TEXT, product TEXT, amount INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?, ?)",
+            [
+                ("2026-01-01", "Alpha", 20),
+                ("2026-01-02", "Beta", 35),
+                ("2026-01-03", "Gamma", 50),
+                ("2026-01-03", "Gamma", 10),
+            ],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    sold_at = ColumnRef(table_id, "sold_at")
+    amount = ColumnRef(table_id, "amount")
+    plan = QueryPlan(
+        base_table=table_id,
+        time_buckets=(TimeBucket(sold_at, "day", "sale_day"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("revenue", "desc"),),
+        limit=1,
+        output_type="date",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.answer_type == "date"
+    assert result.answer.value == "2026-01-03"
+    assert result.answer.status == "answered"
+
+    product = ColumnRef(table_id, "product")
+    product_plan = QueryPlan(
+        base_table=table_id,
+        selected_columns=(product,),
+        group_by=(product,),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("revenue", "desc"),),
+        limit=1,
+        output_type="string",
+    )
+
+    product_result = execute_business_plan(business, product_plan)
+
+    assert product_result.answer.answer_type == "string"
+    assert product_result.answer.value == "Gamma"
+    assert product_result.answer.status == "answered"
+
+
 def test_table_output_hides_grouping_key_used_only_for_tie_breaks(
     tmp_path: Path,
 ) -> None:

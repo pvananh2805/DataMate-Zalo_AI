@@ -119,6 +119,21 @@ def _answer_value(
         if any(len(row) != 1 for row in result.rows):
             raise PipelineError("list output requires exactly one result column")
         return [next(iter(row.values())) for row in result.rows]
+    if answer_type in {"date", "string", "boolean"} and len(result.rows) == 1:
+        if len(plan.selected_columns) == 1:
+            ref = plan.selected_columns[0]
+            key = f"{ref.table}.{ref.column}"
+        elif not plan.selected_columns and len(plan.time_buckets) == 1:
+            key = plan.time_buckets[0].alias
+        else:
+            key = None
+        if key is not None:
+            try:
+                return result.rows[0][key]
+            except KeyError as exc:
+                raise PipelineError(
+                    f"scalar output column is unavailable: {key}"
+                ) from exc
     if plan.calculations:
         if len(result.rows) != 1:
             raise PipelineError(
