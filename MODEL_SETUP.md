@@ -58,6 +58,11 @@ riêng: trước tiên cần merge/export thành model đầy đủ tương thí
 `AutoModelForCausalLM`. Không commit checkpoint, token truy cập hoặc thông tin
 tài khoản vào repository.
 
+Trước khi nạp runtime, backend kiểm tra `config.json`, tokenizer artifact và
+weights local (kể cả các shard được khai báo trong index). Sau đó Transformers
+vẫn phải đọc và xác thực checkpoint thực tế; kiểm tra tệp tồn tại không chứng
+minh checkpoint hợp lệ hoặc tương thích kiến trúc.
+
 ## 2. Cài runtime trên máy GPU
 
 Tạo môi trường ảo rồi cài **bản PyTorch đúng với GPU/driver/CUDA của máy** theo

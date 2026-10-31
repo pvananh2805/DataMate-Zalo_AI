@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import math
+import json
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,110 @@ from .question_understanding import QuestionUnderstandingError
 
 class LocalModelError(QuestionUnderstandingError):
     """Raised when a local inference checkpoint cannot be loaded or used safely."""
+
+
+def _validate_checkpoint_files(model_path: Path) -> None:
+    config_path = model_path / "config.json"
+    if not config_path.is_file():
+        raise LocalModelError("Local checkpoint is missing config.json")
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LocalModelError(f"Local checkpoint config.json is invalid: {exc}") from exc
+    if not isinstance(config, dict):
+        raise LocalModelError("Local checkpoint config.json must contain an object")
+    if not isinstance(config.get("model_type"), str) or not config["model_type"]:
+        raise LocalModelError("Local checkpoint config.json must declare model_type")
+
+    weight_index = next(
+        (
+            model_path / name
+            for name in (
+                "model.safetensors.index.json",
+                "pytorch_model.bin.index.json",
+            )
+            if (model_path / name).is_file()
+        ),
+        None,
+    )
+    if weight_index is not None:
+        try:
+            index = json.loads(weight_index.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise LocalModelError(
+                f"Local checkpoint weight index is invalid: {weight_index.name}"
+            ) from exc
+        weight_map = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(weight_map, dict) or not weight_map:
+            raise LocalModelError(
+                f"Local checkpoint weight index has no weight_map: {weight_index.name}"
+            )
+        shard_values = list(weight_map.values())
+        if any(
+            not isinstance(shard, str) or not shard or Path(shard).name != shard
+            for shard in shard_values
+        ):
+            raise LocalModelError("Local checkpoint weight index has an unsafe shard path")
+        shards = set(shard_values)
+        missing_shards = sorted(
+            shard
+            for shard in shards
+            if not (model_path / shard).is_file() or (model_path / shard).stat().st_size == 0
+        )
+        if missing_shards:
+            raise LocalModelError(
+                "Local checkpoint is missing weight shard(s): "
+                + ", ".join(missing_shards)
+            )
+    elif not any(
+        (model_path / name).is_file() and (model_path / name).stat().st_size > 0
+        for name in ("model.safetensors", "pytorch_model.bin")
+    ):
+        raise LocalModelError(
+            "Local checkpoint is missing model.safetensors or pytorch_model.bin weights"
+        )
+
+    tokenizer_files = (
+        "tokenizer.json",
+        "tokenizer.model",
+        "spiece.model",
+        "sentencepiece.bpe.model",
+        "vocab.json",
+        "vocab.txt",
+    )
+    if not any(
+        (model_path / name).is_file() and (model_path / name).stat().st_size > 0
+        for name in tokenizer_files
+    ):
+        raise LocalModelError("Local checkpoint is missing tokenizer vocabulary files")
+    tokenizer_json_path = model_path / "tokenizer.json"
+    if tokenizer_json_path.is_file():
+        try:
+            tokenizer_json = json.loads(
+                tokenizer_json_path.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise LocalModelError(
+                "Local checkpoint tokenizer.json is invalid"
+            ) from exc
+        if not isinstance(tokenizer_json, dict):
+            raise LocalModelError(
+                "Local checkpoint tokenizer.json must contain an object"
+            )
+    tokenizer_config_path = model_path / "tokenizer_config.json"
+    if tokenizer_config_path.is_file():
+        try:
+            tokenizer_config = json.loads(
+                tokenizer_config_path.read_text(encoding="utf-8-sig")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise LocalModelError(
+                f"Local checkpoint tokenizer_config.json is invalid: {exc}"
+            ) from exc
+        if not isinstance(tokenizer_config, dict):
+            raise LocalModelError(
+                "Local checkpoint tokenizer_config.json must contain an object"
+            )
 
 
 def _estimate_kv_cache_bytes(
@@ -106,6 +211,7 @@ class LocalTransformersBackend:
     def _load(self) -> None:
         if self._model is not None:
             return
+        _validate_checkpoint_files(self.model_path)
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
         try:

@@ -1,3 +1,4 @@
+import json
 import sys
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -8,6 +9,16 @@ import datamate.local_inference as local_inference
 from datamate.local_inference import LocalModelError, LocalTransformersBackend
 
 
+def _write_checkpoint_files(checkpoint) -> None:
+    checkpoint.mkdir(parents=True, exist_ok=True)
+    (checkpoint / "config.json").write_text(
+        '{"model_type":"test"}',
+        encoding="utf-8",
+    )
+    (checkpoint / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (checkpoint / "model.safetensors").write_bytes(b"test weights")
+
+
 def test_local_backend_requires_checkpoint_and_has_no_remote_fallback(
     tmp_path,
     monkeypatch,
@@ -16,12 +27,37 @@ def test_local_backend_requires_checkpoint_and_has_no_remote_fallback(
         LocalTransformersBackend(tmp_path / "missing")
 
     checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
+    _write_checkpoint_files(checkpoint)
     monkeypatch.setitem(sys.modules, "torch", None)
     backend = LocalTransformersBackend(checkpoint)
 
     with pytest.raises(LocalModelError, match="no remote API fallback"):
         backend.generate("Tổng doanh thu?")
+
+
+def test_local_backend_rejects_checkpoint_with_missing_indexed_weight_shard(
+    tmp_path,
+) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    _write_checkpoint_files(checkpoint)
+    (checkpoint / "model.safetensors").unlink()
+    (checkpoint / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"layer.weight": "model-00001-of-00002.safetensors"}}),
+        encoding="utf-8",
+    )
+    backend = LocalTransformersBackend(checkpoint)
+
+    with pytest.raises(LocalModelError, match="missing weight shard"):
+        backend.load()
+
+
+def test_local_backend_rejects_invalid_config_before_loading_runtime(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    _write_checkpoint_files(checkpoint)
+    (checkpoint / "config.json").write_text("{", encoding="utf-8")
+
+    with pytest.raises(LocalModelError, match="config.json is invalid"):
+        LocalTransformersBackend(checkpoint).load()
 
 
 def _fake_cuda_backend(
@@ -112,7 +148,7 @@ def _fake_cuda_backend(
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     checkpoint = tmp_path / "checkpoint"
-    checkpoint.mkdir()
+    _write_checkpoint_files(checkpoint)
     return LocalTransformersBackend(
         checkpoint,
         generation_timeout_seconds=generation_timeout_seconds,
