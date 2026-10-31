@@ -1,4 +1,4 @@
-"""Run offline question-to-answer inference and write internal JSONL run logs."""
+"""Chạy suy luận offline và ghi nhật ký nội bộ dạng JSONL."""
 
 from __future__ import annotations
 
@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 
 from datamate.answer_validation import AnswerValidationError
+from datamate.business_context import (
+    BusinessContextDocuments,
+    load_business_context,
+)
 from datamate.data_loader import DataLoadError
 from datamate.local_inference import LocalTransformersBackend
 from datamate.normalization import ColumnCoercion, ValueNormalizationError
@@ -66,16 +70,21 @@ def _safe_business_directory(root: Path, business_id: object) -> Path:
 
 
 def main() -> None:
+    for output in (sys.stdout, sys.stderr):
+        if hasattr(output, "reconfigure"):
+            output.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", required=True, help="Questions JSONL")
+    parser.add_argument("--input", required=True, help="Tệp câu hỏi JSONL")
     parser.add_argument(
         "--business-data-root",
         required=True,
-        help="Directory containing one subdirectory per business_id",
+        help="Thư mục chứa thư mục con cho từng business_id",
     )
-    parser.add_argument("--model-path", required=True, help="Local model checkpoint")
-    parser.add_argument("--log", required=True, help="New or appendable internal JSONL log")
-    parser.add_argument("--coercions", type=Path, help="Reviewed coercion policy JSON")
+    parser.add_argument("--model-path", required=True, help="Checkpoint mô hình cục bộ")
+    parser.add_argument("--log", required=True, help="Tệp nhật ký JSONL nội bộ")
+    parser.add_argument("--coercions", type=Path, help="JSON policy chuẩn hóa đã duyệt")
+    parser.add_argument("--rulebook", type=Path, help="Markdown rulebook dùng chung")
+    parser.add_argument("--calendar", type=Path, help="CSV calendar dùng chung")
     parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"), default="bf16")
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--parameter-cap", type=int, default=15_000_000_000)
@@ -108,6 +117,7 @@ def main() -> None:
     planner = JsonPlanAdapter(backend, model_name=backend.model_name)
     succeeded = 0
     failed = 0
+    context_cache: dict[str, BusinessContextDocuments] = {}
     with input_path.open("r", encoding="utf-8-sig") as stream:
         for line_number, line in enumerate(stream, start=1):
             if not line.strip():
@@ -141,6 +151,27 @@ def main() -> None:
                 continue
             try:
                 business_dir = _safe_business_directory(business_root, business_id)
+                if business_id not in context_cache:
+                    context_cache[business_id] = load_business_context(
+                        business_dir,
+                        business_root,
+                        rulebook_path=args.rulebook,
+                        calendar_path=args.calendar,
+                    )
+                    missing_sources = [
+                        name
+                        for name, metadata in context_cache[
+                            business_id
+                        ].source_metadata.items()
+                        if metadata["status"] == "missing"
+                    ]
+                    if missing_sources:
+                        print(
+                            f"Cảnh báo: Thiếu tài liệu ngữ cảnh cho {business_id}: "
+                            f"{', '.join(missing_sources)}",
+                            file=sys.stderr,
+                        )
+                documents = context_cache[business_id]
                 execute_question_and_log(
                     business_dir,
                     question,
@@ -150,8 +181,16 @@ def main() -> None:
                     as_of_date=as_of_date,
                     log_path=log_path,
                     input_root=business_root,
-                    input_metadata={"source_file": input_path.name, "line_number": line_number},
+                    input_metadata={
+                        "source_file": input_path.name,
+                        "line_number": line_number,
+                        "business_context_sources": documents.source_metadata,
+                    },
                     column_coercions=coercions.get(business_id),
+                    rulebook=documents.rulebook,
+                    business_readme=documents.business_readme,
+                    calendar_columns=documents.calendar_columns,
+                    calendar_rows=documents.calendar_rows,
                 )
                 succeeded += 1
             except (

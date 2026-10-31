@@ -304,6 +304,10 @@ def execute_question_and_log(
     log_path: Path | str,
     input_root: Path | str,
     business_rules: tuple[str, ...] = (),
+    rulebook: str | None = None,
+    business_readme: str | None = None,
+    calendar_columns: tuple[str, ...] = (),
+    calendar_rows: tuple[Mapping[str, str], ...] = (),
     input_metadata: dict[str, object] | None = None,
     column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
     max_join_rows: int = 100_000,
@@ -324,6 +328,10 @@ def execute_question_and_log(
             schema=schema.columns,
             as_of_date=as_of_date,
             business_rules=business_rules,
+            rulebook=rulebook,
+            business_readme=business_readme,
+            calendar_columns=calendar_columns,
+            calendar_rows=calendar_rows,
         )
         plan = planner.create_plan(question, context)
         if plan.output_type in {"unanswerable", "abstain"}:

@@ -220,8 +220,9 @@ def test_question_to_plan_to_answer_is_integrated_and_logged(tmp_path: Path) -> 
         ],
         "output_type": "number",
     }
+    prompts: list[str] = []
     planner = JsonPlanAdapter(
-        lambda prompt: json.dumps(generated_plan),
+        lambda prompt: prompts.append(prompt) or json.dumps(generated_plan),
         model_name="local-stub",
     )
     log_path = tmp_path / "logs" / "question.jsonl"
@@ -235,13 +236,28 @@ def test_question_to_plan_to_answer_is_integrated_and_logged(tmp_path: Path) -> 
         as_of_date="2026-01-31",
         log_path=log_path,
         input_root=input_root,
+        rulebook="# Quy tắc doanh thu",
+        business_readme="amount tính bằng VND",
+        calendar_columns=("solar_date",),
+        calendar_rows=({"solar_date": "2026-01-31"},),
+        input_metadata={
+            "business_context_sources": {
+                "rulebook": {"status": "loaded", "sha256": "abc123"}
+            }
+        },
     )
 
     (record,) = read_run_records(log_path)
     assert result.answer.value == 20
     assert record["model"] == "local-stub"
     assert record["input"]["metadata"]["as_of_date"] == "2026-01-31"
+    assert record["input"]["metadata"]["business_context_sources"]["rulebook"][
+        "sha256"
+    ] == "abc123"
     assert record["query_plan"]["base_table"] == table_id
+    assert prompts and "# Quy tắc doanh thu" in prompts[0]
+    assert "amount tính bằng VND" in prompts[0]
+    assert "2026-01-31" in prompts[0]
 
 
 def test_question_planning_failure_is_recorded_without_a_fake_plan(

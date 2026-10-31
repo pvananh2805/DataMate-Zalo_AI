@@ -77,6 +77,12 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
             schema={TABLE: ("amount", "sold_at")},
             as_of_date="2026-05-25",
             business_rules=("Hủy đơn không tính doanh thu.",),
+            rulebook="# Nguyên tắc",
+            business_readme="amount tính bằng VND",
+            calendar_columns=("solar_date", "lunar_date"),
+            calendar_rows=(
+                {"solar_date": "2026-05-25", "lunar_date": "2026-04-09"},
+            ),
         ),
     )
 
@@ -84,6 +90,9 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "2026-05-25" in prompt
     assert "sold_at" in prompt
     assert "Hủy đơn không tính doanh thu." in prompt
+    assert "# Nguyên tắc" in prompt
+    assert "amount tính bằng VND" in prompt
+    assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
 
 
