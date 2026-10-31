@@ -619,7 +619,7 @@ def test_pipeline_converts_sales_units_using_joined_product_catalog(
             Aggregation(
                 "sum",
                 ColumnRef(sales_id, "quantity"),
-                "quantity_in_kg",
+                "quantity_in_product_base_units",
                 unit_conversion=UnitConversion(
                     source_unit=ColumnRef(sales_id, "unit"),
                     base_unit=ColumnRef(products_id, "base_unit"),
@@ -641,6 +641,24 @@ def test_pipeline_converts_sales_units_using_joined_product_catalog(
         "unit_conversion_to=product_base_unit" in item.filter_summary
         for item in result.answer.evidence
     )
+
+    product_id = ColumnRef(sales_id, "product_id")
+    ranking_plan = QueryPlan(
+        base_table=sales_id,
+        joins=plan.joins,
+        selected_columns=(product_id,),
+        group_by=(product_id,),
+        aggregations=plan.aggregations,
+        sort=(
+            Sort("quantity_in_product_base_units", "desc"),
+            Sort(product_id, "asc"),
+        ),
+        limit=1,
+        output_type="list",
+    )
+    ranking_result = execute_business_plan(business, ranking_plan)
+
+    assert ranking_result.answer.value == ["A"]
 
 
 def test_pipeline_counts_groups_meeting_distinct_order_threshold(
