@@ -240,11 +240,30 @@ def validate_query_plan(
         conversion = aggregation.unit_conversion
         if conversion is None:
             continue
-        dimension_tables = {
+        lookup_tables = {
             conversion.base_unit.table,
             conversion.large_unit.table,
             conversion.factor.table,
         }
+        if (
+            aggregation.column is not None
+            and conversion.source_unit.table != aggregation.column.table
+        ):
+            issues.append(
+                "unit conversion source_unit must use the aggregation column's table"
+            )
+        if len(lookup_tables) != 1:
+            issues.append(
+                "unit conversion lookup columns must come from the same table"
+            )
+        elif (
+            next(iter(lookup_tables)) != conversion.source_unit.table
+            and next(iter(lookup_tables)) == plan.base_table
+        ):
+            issues.append(
+                "unit conversion lookup table must be joined to the plan, not used "
+                "as its base table"
+            )
         joined_tables = {plan.base_table}
         for join in plan.joins:
             new_table = (
@@ -253,7 +272,7 @@ def validate_query_plan(
                 else join.left.table
             )
             if (
-                new_table in dimension_tables
+                new_table in lookup_tables
                 and new_table != conversion.source_unit.table
                 and join.kind != "left"
             ):

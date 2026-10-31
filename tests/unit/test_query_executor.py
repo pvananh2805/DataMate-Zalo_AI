@@ -501,6 +501,59 @@ def test_unit_conversion_rejects_unknown_units_and_duplicate_lookups() -> None:
         )
 
 
+def test_joined_measure_table_is_not_mistaken_for_unique_conversion_lookup() -> None:
+    customers = "customers"
+    sales = "sales"
+    products = "products"
+    plan = QueryPlan(
+        base_table=customers,
+        joins=(
+            Join(
+                ColumnRef(customers, "customer_id"),
+                ColumnRef(sales, "customer_id"),
+            ),
+            Join(
+                ColumnRef(sales, "product_id"),
+                ColumnRef(products, "product_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(sales, "quantity"),
+                "quantity_in_kg",
+                unit_conversion=UnitConversion(
+                    source_unit=ColumnRef(sales, "unit"),
+                    base_unit=ColumnRef(products, "base_unit"),
+                    large_unit=ColumnRef(products, "large_unit"),
+                    factor=ColumnRef(products, "factor"),
+                    target_unit="kg",
+                ),
+            ),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={
+            customers: ("customer_id",),
+            sales: ("customer_id", "product_id", "quantity", "unit"),
+            products: ("product_id", "base_unit", "large_unit", "factor"),
+        },
+        sources={
+            customers: [(1,)],
+            sales: [
+                (1, "A", Decimal(2), "bag"),
+                (1, "A", Decimal(3), "kg"),
+            ],
+            products: [("A", "kg", "bag", Decimal(50))],
+        },
+    )
+
+    assert result.rows == ({"quantity_in_kg": Decimal(103)},)
+
+
 def test_percentage_calculations_round_half_up_to_two_decimal_places() -> None:
     table = "periods"
     numerator = ColumnRef(table, "numerator")

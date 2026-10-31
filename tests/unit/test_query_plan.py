@@ -284,6 +284,58 @@ def test_unit_conversion_requires_sum_and_valid_columns() -> None:
     assert any("must be left joins" in issue for issue in error.value.issues)
 
 
+def test_unit_conversion_rejects_mismatched_source_and_lookup_tables() -> None:
+    sales = "sales"
+    products = "products"
+    unrelated = "unrelated"
+    catalog = {
+        sales: {"product_id", "quantity", "unit"},
+        products: {"product_id", "base_unit", "large_unit"},
+        unrelated: {"product_id", "factor", "unit"},
+    }
+    plan = QueryPlan(
+        base_table=sales,
+        joins=(
+            Join(
+                ColumnRef(sales, "product_id"),
+                ColumnRef(products, "product_id"),
+                kind="left",
+            ),
+            Join(
+                ColumnRef(sales, "product_id"),
+                ColumnRef(unrelated, "product_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(
+            Aggregation(
+                "sum",
+                ColumnRef(sales, "quantity"),
+                "converted_quantity",
+                unit_conversion=UnitConversion(
+                    source_unit=ColumnRef(unrelated, "unit"),
+                    base_unit=ColumnRef(products, "base_unit"),
+                    large_unit=ColumnRef(products, "large_unit"),
+                    factor=ColumnRef(unrelated, "factor"),
+                    target_unit="kg",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(PlanValidationError) as error:
+        validate_query_plan(plan, catalog)
+
+    assert any(
+        "source_unit must use the aggregation column's table" in issue
+        for issue in error.value.issues
+    )
+    assert any(
+        "lookup columns must come from the same table" in issue
+        for issue in error.value.issues
+    )
+
+
 def test_plan_rejects_unknown_time_bucket_columns_and_granularities() -> None:
     orders = "orders.csv::orders"
     plan = QueryPlan(

@@ -639,11 +639,11 @@ def execute_query_plan(
         for aggregation in plan.aggregations
         if aggregation.unit_conversion is not None
         for ref in (
-            aggregation.unit_conversion.source_unit,
             aggregation.unit_conversion.base_unit,
             aggregation.unit_conversion.large_unit,
             aggregation.unit_conversion.factor,
         )
+        if ref.table != aggregation.unit_conversion.source_unit.table
     }
 
     involved_tables = {plan.base_table}
