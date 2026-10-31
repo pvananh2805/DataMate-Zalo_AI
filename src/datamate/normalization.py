@@ -25,6 +25,7 @@ class ColumnCoercion:
     date_format: str | None = None
     fill_down_group: str | None = None
     deduplicate_group: str | None = None
+    aliases: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         for field_name, group in (
@@ -33,6 +34,24 @@ class ColumnCoercion:
         ):
             if group is not None and (not isinstance(group, str) or not group):
                 raise ValueError(f"{field_name} group must be non-empty text")
+        if self.aliases is not None:
+            if self.kind != "text":
+                raise ValueError("aliases can only be configured for text columns")
+            if not isinstance(self.aliases, Mapping):
+                raise ValueError("aliases must be an object mapping text to text")
+            normalized_aliases: set[str] = set()
+            for alias, canonical in self.aliases.items():
+                if (
+                    not isinstance(alias, str)
+                    or not alias.strip()
+                    or not isinstance(canonical, str)
+                    or not canonical.strip()
+                ):
+                    raise ValueError("aliases must map non-empty text to non-empty text")
+                normalized_alias = alias.strip().casefold()
+                if normalized_alias in normalized_aliases:
+                    raise ValueError("aliases cannot contain duplicate case-insensitive keys")
+                normalized_aliases.add(normalized_alias)
         if len(self.decimal_separator) != 1:
             raise ValueError("decimal separator must be one character")
         if (
@@ -150,7 +169,13 @@ def normalize_value(
                 return False
         raise ValueNormalizationError(f"{column}: boolean token is not recognized")
     if policy.kind in {"text", "identifier"}:
-        return value if isinstance(value, str) else str(value)
+        text = value if isinstance(value, str) else str(value)
+        if policy.aliases is not None:
+            normalized = text.strip().casefold()
+            for alias, canonical in policy.aliases.items():
+                if alias.strip().casefold() == normalized:
+                    return canonical
+        return text
     raise ValueNormalizationError(f"{column}: unsupported conversion policy")
 
 

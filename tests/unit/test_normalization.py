@@ -174,3 +174,32 @@ def test_exact_row_deduplication_fails_closed_at_its_bound() -> None:
 
     with pytest.raises(ValueNormalizationError, match="row limit"):
         list(rows)
+
+
+def test_text_aliases_are_canonicalized_only_when_explicitly_configured() -> None:
+    rows = normalize_rows(
+        [("latte",), ("CAFÉ LATTE ",), ("Latte macchiato",)],
+        ("product",),
+        {
+            "product": ColumnCoercion(
+                "text",
+                aliases={
+                    "Latte": "Cà phê sữa",
+                    "Café latte": "Cà phê sữa",
+                },
+            )
+        },
+    )
+
+    assert list(rows) == [
+        ("Cà phê sữa",),
+        ("Cà phê sữa",),
+        ("Latte macchiato",),
+    ]
+
+
+def test_alias_policy_rejects_non_text_and_conflicting_keys() -> None:
+    with pytest.raises(ValueError, match="text columns"):
+        ColumnCoercion("identifier", aliases={"id": "canonical"})
+    with pytest.raises(ValueError, match="duplicate case-insensitive keys"):
+        ColumnCoercion("text", aliases={"alias": "A", "ALIAS ": "B"})

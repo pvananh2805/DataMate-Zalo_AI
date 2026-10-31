@@ -34,6 +34,7 @@ _COERCION_FIELDS = {
     "date_format",
     "fill_down_group",
     "deduplicate_group",
+    "aliases",
 }
 _COERCION_KINDS = {
     "number",

@@ -100,6 +100,7 @@ def test_coercion_config_reads_explicit_sparse_group_policy(tmp_path: Path) -> N
                         "status": {
                             "kind": "text",
                             "fill_down_group": "order_id",
+                            "aliases": {"returned alias": "returned"},
                         },
                     }
                 }
@@ -120,6 +121,7 @@ def test_coercion_config_reads_explicit_sparse_group_policy(tmp_path: Path) -> N
             ColumnRef("orders.csv::orders", "status"): ColumnCoercion(
                 "text",
                 fill_down_group="order_id",
+                aliases={"returned alias": "returned"},
             ),
         }
     }

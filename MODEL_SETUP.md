@@ -163,6 +163,13 @@ khác nội dung vẫn được giữ, và dòng của đơn khác không bị g
 nhóm cũng không bị tự ý loại. Để giữ bộ nhớ hữu hạn, chính sách này dừng với lỗi
 nếu cần theo dõi quá 100.000 dòng khác nhau có nhóm; không cắt bớt âm thầm.
 
+Tên thay thế cũng chỉ được hợp nhất khi khai báo tường minh trên cột `text`,
+ví dụ `aliases: {"tên trong file": "tên chuẩn"}`. So khớp bỏ khoảng trắng đầu/
+cuối và không phân biệt hoa thường; tên không khai báo vẫn giữ nguyên. Hãy chọn
+tên chuẩn vốn có trong dữ liệu nếu nó sẽ được xuất ra câu trả lời. Backend không
+tự phát hiện tên đồng nghĩa; nếu shop có mã định danh thì ưu tiên mã, không gộp
+theo tên.
+
 ## 4. Chạy inference
 
 Từ thư mục gốc repository:

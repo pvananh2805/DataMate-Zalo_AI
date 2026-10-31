@@ -192,7 +192,7 @@ def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> Non
         "O-1,completed,10\n"
         ",,5\n"
         ",,5\n"
-        "O-2,returned,8\n"
+        "O-2,returned alias,8\n"
         ",,2\n",
         encoding="utf-8",
     )
@@ -233,7 +233,11 @@ def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> Non
                 fill_down_group="order_id",
                 deduplicate_group="order_id",
             ),
-            status: ColumnCoercion("text", fill_down_group="order_id"),
+            status: ColumnCoercion(
+                "text",
+                fill_down_group="order_id",
+                aliases={"returned alias": "returned"},
+            ),
             revenue: ColumnCoercion("number"),
         },
     )
@@ -248,6 +252,9 @@ def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> Non
     assert record["input"]["metadata"]["column_coercions"][
         f"{table_id}.order_id"
     ]["deduplicate_group"] == "order_id"
+    assert record["input"]["metadata"]["column_coercions"][
+        f"{table_id}.status"
+    ]["aliases"] == {"returned alias": "returned"}
     assert replay["replay_matches"] is True
 
 
