@@ -43,6 +43,9 @@ class LocalTransformersBackend:
         self.cpu_threads = cpu_threads
         self.model_name = self.model_path.name
         self.parameter_count: int | None = None
+        self.model_storage_bytes: int | None = None
+        self.cuda_free_bytes_before_transfer: int | None = None
+        self.cuda_total_bytes: int | None = None
         self._model: Any = None
         self._tokenizer: Any = None
         self._torch: Any = None
@@ -99,12 +102,34 @@ class LocalTransformersBackend:
                 f"Model has {parameter_count:,} parameters, above cap "
                 f"{self.parameter_cap:,}"
             )
+        model_storage_bytes = sum(
+            parameter.numel() * parameter.element_size()
+            for parameter in model.parameters()
+        ) + sum(
+            buffer.numel() * buffer.element_size()
+            for buffer in model.buffers()
+        )
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+        except RuntimeError as exc:
+            raise LocalModelError(
+                f"Cannot inspect CUDA device memory before loading {self.model_name}"
+            ) from exc
+        if model_storage_bytes > free_bytes:
+            raise LocalModelError(
+                f"Model weights and buffers need at least {model_storage_bytes:,} CUDA "
+                f"bytes, but only {free_bytes:,} are free. This estimate excludes "
+                "generation cache and runtime workspace."
+            )
         model.to(torch.device("cuda:0"))
         model.eval()
         self._model = model
         self._tokenizer = tokenizer
         self._torch = torch
         self.parameter_count = parameter_count
+        self.model_storage_bytes = model_storage_bytes
+        self.cuda_free_bytes_before_transfer = free_bytes
+        self.cuda_total_bytes = total_bytes
 
     def load(self) -> None:
         """Load the selected checkpoint once; subsequent calls are idempotent."""

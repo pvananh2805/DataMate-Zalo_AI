@@ -1,0 +1,130 @@
+# DataMate — Comprehensive Audit Report
+
+**Audit date:** 2026-10-31
+**Audit baseline branch / HEAD:** `master` / `8d98917`
+**Scope:** Repository, existing tests, local training-package inventory already recorded in `planning/13_DATASET_ANALYSIS.md`, official Zalo AI Challenge 2026 Regulations, and the official DataMate portal frontend/API. The public-test archive remains unopened; no private-test material was accessed.
+
+## Executive status
+
+DataMate has a useful deterministic foundation: read-only readers for CSV/XLSX/SQLite, a declarative QueryPlan, validation, a bounded executor, answer validation, evidence/logging/replay, and a batch CLI. The complete local suite currently passes **199 tests**. Existing integration tests use synthetic fixtures and planner stubs; they are not model-accuracy evidence.
+
+The system is **not competition-ready**. No real model has been selected, loaded, benchmarked, or trained. The local evaluator is diagnostic, not the official metric. The official Docker/runtime and detailed DataMate Evaluation/Submission Guidance have not been obtained. Most importantly, the actual business rules are passed to the planner as text; there is no general structured rulebook executor, so many answer-critical rules cannot yet be certified as applied.
+
+The official Regulations PDF was extracted locally (14 pages) from the official Regulations page. It confirms data-use and annotation restrictions, an OSI license requirement for open-source software used by a model, final-solution deliverables, and that evaluation follows the metric published on the challenge portal. It does **not** establish the brief's 15B cap, model release cutoff, six-hour runtime, offline/Docker contract, or formula for Penalized Accuracy. The portal's public config-detail endpoint returned `Invalid Request` for the evaluation, rule, and submission-guidance keys found in its frontend; those technical details remain **UNVERIFIED**.
+
+## Architecture found
+
+```text
+JSONL questions
+  -> local Transformers planner adapter (QueryPlan JSON)
+  -> discovered schema + QueryPlan validation
+  -> read-only CSV/XLSX/SQLite loader and deterministic executor
+  -> validated answer + evidence + execution trace
+  -> append-only internal run log / reference JSONL serializer
+```
+
+Additional paths prepare manually annotated QueryPlans, validate business-disjoint splits, run GPU-only LoRA/full training, merge LoRA adapters, profile schemas, perform local diagnostic evaluation, and replay a logged plan. The submission serializer and local evaluator are explicitly reference/diagnostic implementations, not confirmed organizer interfaces.
+
+## Component audit
+
+| Component | Status | Implemented and tested evidence | Data / important limits | Compliance assessment and next work |
+|---|---|---|---|---|
+| Data loader | PARTIAL | Deterministic discovery and streaming readers for CSV, XLSX worksheets, and read-only SQLite; path containment and symlink checks. Unit tests cover representative fixtures. | Tests use fixtures. Prior training inventory discovered 339 table references across 30 businesses, but no end-to-end inference over all real training tables was certified. Header ambiguity exists in training workbooks. | No known write path to source data. Review ambiguous headers and test representative real training packages before relying on inferred schemas. |
+| Schema profiler | PARTIAL | Bounded type/null/distinct samples, semantic tags, candidate-key heuristics, package inventory; profiler unit tests exist. | Training archive has structural profiling, not an audited relationship/join map. Candidate keys are sampled heuristics, not proof. | Keep suggestions non-authoritative; validate keys/joins and ambiguous headers against permitted training data. |
+| Data normalization | PARTIAL | Explicit coercion policies for numeric/date/boolean/text values; unit tests cover normalization cases. | Fixture coverage only; ambiguous locale formats need explicit configuration. | Do not silently infer business-specific formats; expand tests only for documented real conventions. |
+| Business context | PARTIAL | Bounded, read-only loading of business README, rulebook, and calendar; source names/sizes/hashes recorded; fixture tests exist. | Context is sent as planner text. It is not parsed into executable rules, and prompt size limits may reject large references. | A document being present does not prove its rule was followed. Build structured rules only from verified text and test their execution. |
+| Question understanding | PARTIAL | Model-independent `TextGenerationBackend`/`QueryPlanner` interfaces; JSON adapter parses and validates plans; malformed/oversized outputs fail. Unit tests use fake backends. | No checkpoint or real model inference has been tested. | Planner must remain a plan generator; preserve validation and abstention for unsupported semantics. |
+| QueryPlan representation | PARTIAL | Declarative AST covers filters, joins, grouping, aggregations, calculations, time buckets, unit conversions, group exclusions, ranking, and output type. Serialization and plan tests exist. | Coverage is against synthetic plan examples, not exhaustive question-to-plan correctness. | Strong safety boundary; no SQL or executable code accepted. Test rulebook-relevant edge cases. |
+| QueryPlan validator | PARTIAL | Allowlisted operations, catalog/column checks, join shape, scalar/filter/time/output constraints; rejects nonempty `business_rules`. Unit tests exist. | Validation proves structural validity, not business meaning, key uniqueness, or join cardinality correctness. | Safe rejection is preferable to an unsupported rule being claimed as applied. Add semantic checks only with evidence. |
+| Query executor | PARTIAL | Deterministic in-process filters, joins, grouping, aggregate/calculation, ordering/limits, time buckets, unit conversion, and exclusion handling; unit/integration fixtures. | Some operations materialize join/group state in memory and have limits. No throughput/latency test on the full training corpus. Generic arithmetic does not itself implement cancellation, return, voucher, VAT, shipping, cost, debt, or inventory policy. | Rules not encoded by the plan/executor must not be reported as applied. Benchmark permitted real training data and add rule-specific general tests before claiming these semantics. |
+| Business rules | PARTIAL | Prompt instructions describe selected safe representations (for example, group exclusions, unit conversion, Monday-based weeks); unsupported `business_rules` are rejected. | There is no structured, provenance-bearing rulebook interpreter. Rulebook coverage for returns/cancellations, voucher scope, VAT/shipping, cost, debt, inventory, and lunar dates is not certified end to end. | Core blocker. Map each applicable rule to an executable plan operation or a deterministic abstention; never rely on the model merely repeating a rule. |
+| Evidence | PARTIAL | Pipeline attaches source tables/columns, row counts, and operation summaries from the validated plan; pipeline tests exercise fixtures. | Evidence is a coarse execution trace, not complete row-level/value lineage or independent proof of rule interpretation. | Improve provenance where needed; a plausible answer without sufficient evidence must not be treated as verified. |
+| Logging | PARTIAL | Append-only JSONL stores question/business IDs, model label, plan, execution trace, answer, elapsed time, errors, and input metadata; tests exist. | Checkpoint/config/code/data hashes and run-level environment identity are not consistently supplied by the inference CLI. No model run has been logged. | Add reproducibility metadata before model evaluation; keep logs outside source-data roots. |
+| Replay | PARTIAL | Re-executes a logged successful plan against read-only data and compares answer and trace; integration tests use fixtures. | Does not regenerate the plan or prove model determinism; requires recorded execution limits and coercions. | Useful for executor reproducibility only, not as evidence of model accuracy. |
+| Evaluation | PARTIAL | Local evaluator validates records and reports exact-match diagnostics by type/business, abstention/unanswerable, invalid/missing output, and latency; unit tests exist. | This is explicitly not official Penalized Accuracy. No QueryPlan-vs-gold evaluation or model-validation score has been produced. | Do not publish local exact-match or test counts as official accuracy. Obtain organizer evaluator and its version before calculating official metrics. |
+| Training-data preparation | PARTIAL | Annotation schema is manually authored `question_id`, `business_id`, `query_plan`; output joins to questions, validates plans, and splits by business; unit tests exist. It refuses to fabricate labels. | No reviewed QueryPlan annotations or actual training run exist. Existing training questions/answers have been inventoried, not converted to fabricated plan labels. | Train/validation business leakage is guarded. Validate annotation policy against the challenge-specific guidance. |
+| Fine-tuning / LoRA / merge | PARTIAL | CUDA-only local scripts, explicit LoRA targets, local-only model loading, parameter checks, and merge/export path exist. CLI/unit-level tests cover validation paths. | No model, CUDA runtime, or training dependencies are available here; training, merge, and exported artifacts are untested. | No training has been run. Verify model/license and the complete parameter accounting rule before using any checkpoint. |
+| Local inference backend | PARTIAL | Local checkpoint path, `local_files_only=True`, `trust_remote_code=False`, offline flags, CUDA requirement, precision selection, prompt/output limits, loaded-model parameter count, and a pre-transfer CUDA free-memory check against the loaded weights/buffers. Unit tests cover insufficient and sufficient mocked VRAM. | No checkpoint/GPU/Transformers smoke test. Memory check is a lower bound and excludes generation cache/runtime workspace; there is no timeout. Parameter count is measured for the single loaded causal LM, not an inventory of any additional inference models. | Model-ready scaffold only. Add model manifest/accounting for every inference component and robust runtime limits; verify actual VRAM behavior only with hardware/checkpoint. |
+| Manual testing | DONE | Runner and synthetic 100-question example bundle exist; prior run processed 100/100 with a stub planner, including 80 labeled expected answers. | Synthetic fixture and scripted plans only; it is not an AI benchmark or challenge-data score. User-owned root manual-test files remain ignored/untracked. | Keep the user's manual-test files separate from official training/test material. |
+| Submission serializer | PARTIAL | Atomic JSONL writer validates answer types/IDs and rejects duplicates; tests exist. It follows the training rulebook reference shape. | No organizer validator or Docker contract was run. | Output schema and answer nuances remain unverified against official challenge guidance. |
+| Docker / entrypoint | BLOCKED | No Dockerfile, Compose file, or Docker-specific entrypoint was found. Batch inference CLI exists independently. | Docker CLI is unavailable; official Docker/runtime guide is not accessible through the current portal API. No image was built or run. | Do not invent paths, mounts, base image, or resource limits. Obtain the official guide and then implement and test the exact interface. |
+
+## Official-regulation traceability
+
+Statuses below describe evidence available during this audit, not a declaration of full compliance.
+
+| Requirement | Status | Official evidence / actual state |
+|---|---|---|
+| Use of competition data | PARTIAL | Regulations §§4.1–4.3: competition data is for the stated non-commercial/academic purposes, attribution to `challenge.zalo.ai` is required, and data must not be shared outside the team during the competition. Local train archive is kept untracked; public-test ZIP has not been opened. Data-retention/deletion obligations remain for the end of the competition, and private-repository collaborators have not been verified. |
+| Manual labels/predictions on validation or test | PARTIAL | Regulations §4.2 prohibits using human labels or predictions on validation/test to create the submission. Current annotation preparation accepts manually authored plans and does not generate plans from gold answers; however, it does not itself enforce dataset provenance. No validation/test annotations were created. |
+| Open-source licenses | PARTIAL | Regulations §4.5 requires valid OSI licenses without commercial-use restriction for open-source libraries/code used by a model, unless written permission allows otherwise. Dependency/model licenses have not been fully inventoried; model-weight license eligibility remains unverified. |
+| Final package contents | PARTIAL | Regulations §5.2 requires the final solution to include training code, testing code, model, method description, and run instructions; technical details and challenge-specific time limits are to be announced. Some source/docs exist, but no eligible model, official package, or verified runner is present. |
+| Evaluation metric | PARTIAL | Regulations §6.1 says submissions are ranked by the evaluation metric on the portal. The exact metric/evaluator is not stated in the Regulations PDF, and the portal API request for `evaluationMetric` returned `Invalid Request`; official PA and abstention semantics are not verified. |
+| Model total parameter cap, release date, MoE accounting, quantization | UNVERIFIED | Not found in extracted Regulations §§1–10. User-provided brief says ≤15B and cutoff requirements, but the challenge-specific model rules could not be retrieved. Current backend defaults to 15B for one loaded model; this does not establish compliance. |
+| Offline inference / no commercial LLM API / no Internet fetch | UNVERIFIED | Not established by the Regulations PDF or accessible challenge technical guidance. Current backend is designed for local-only loading, but offline behavior has not been tested with a real checkpoint/container. |
+| Private-test restrictions, ID/business leakage, `/data` read-only | UNVERIFIED | Regulations §4.2 specifically covers human labels/predictions on validation/test; the broader prohibition and runner filesystem contract in the user brief were not confirmed in technical guidance. Current loader uses read-only readers, but no official runner test was possible. |
+| Docker image, entrypoint, input/output paths, resource limits, six-hour cap | BLOCKED | Regulations §§5.1–5.2 defer technical requirements/time limits to the challenge portal or challenge description. Official Docker/submission guidance was not returned by the accessible portal endpoint. No Docker implementation or runtime claim is made. |
+| Output schema and `.jsonl` details | PARTIAL | Official portal bundle identifies `.jsonl` as the submission format. Training `rulebook.md` provides a reference `id/type/answer` shape. Neither the portal validator nor exact technical guidance was available, so schema compatibility is not verified. |
+| No hardcoding by question/business ID; no gold-answer leakage | DONE | Project implementation uses a general plan/execution pipeline; no ID-based answer lookup was found in the audited inference path. Dataset preparation does not derive QueryPlan labels from answer values. This is a code-path observation, not an organizer certification. |
+| Reproducibility and logging | PARTIAL | Run log and replay paths exist and have fixture tests. No real model run, official reproducibility tolerance, or full version/hash manifest has been verified. Regulations do not state a numerical rerun tolerance. |
+
+### Official sources checked
+
+- Regulations landing page: <https://challenge.zalo.ai/regulations> — official PDF extracted locally, 14 pages; relevant clauses §§3, 4.1–4.5, 5.1–5.2, 6.1–6.2, 8.2.
+- DataMate portal: <https://challenge.zalo.ai/portal/datamate/> — frontend bundle exposes challenge detail keys `evaluationMetric`, `rule`, and `submissionGuidance` and `.jsonl` submission format. The corresponding public config-detail requests returned `{"error_message":"Invalid Request","data":null,"error_code":-10}`.
+- Training package rulebook: `data/train/train/rulebook.md`, previously inventoried in `planning/13_DATASET_ANALYSIS.md`; it is business guidance supplied with training data, not a substitute for Regulations, official evaluator, or Docker guidance.
+
+## Training-package inventory and data boundary
+
+The existing training-only inventory records 3,000 paired questions/answers across 30 business packages and CSV/XLSX/SQLite files. These are aggregate structural statistics from the training archive; they are not model predictions or accuracy measurements. No public-test content was inspected in this audit and no private-test content was accessed. The training archive and extracted data are untracked and must not be staged or committed. Cite `challenge.zalo.ai` when using competition data and follow the end-of-competition deletion requirement for personal data.
+
+## Test evidence and readiness
+
+- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **201 passed in 3.32s**.
+- **Targeted model/training tests:** **7 passed**, including the new mocked CUDA memory preflight cases.
+- **CLI/build checks after the change:** all eight CLI `--help` checks and `compileall -q src tests scripts` passed. `git diff --check` is recorded after final review below.
+- **Earlier recorded deployment check:** clean dev environment full suite **199 passed**, compileall, eight CLI `--help` checks, and `git diff --check` passed; see `planning/17_DEPLOYMENT_REPORT.md`.
+- **Synthetic manual test:** previously recorded 100/100 stub-planner runs; 80/80 labeled answers matched fixture expectations. Not model inference and not a challenge score.
+- **Real model inference / validation accuracy / official PA:** NOT RUN.
+- **Fine-tuning / merge / export with a checkpoint:** NOT RUN.
+- **Docker build, offline-container test, organizer validator:** NOT RUN.
+
+| Readiness area | Status | Reason |
+|---|---|---|
+| Model-ready | PARTIAL | Local-only Transformers adapter, one-model parameter guard, and minimum CUDA storage preflight for weights/buffers exist; no checkpoint, GPU validation, multi-model parameter inventory, KV-cache/runtime-memory estimate, or model benchmark. |
+| Training-ready | PARTIAL | Human annotation schema, business-heldout split, validation, training and merge scripts exist; no reviewed annotations or executed training/export. |
+| Docker-ready | BLOCKED | Official Docker/runtime guidance unavailable; no Dockerfile/entrypoint or Docker runtime verification. |
+| Submission-ready | BLOCKED | Serializer exists but exact schema, evaluator, artifact contract, and runner interface are unverified. |
+
+## Audit findings and fixes
+
+No source code was changed during Giai đoạn A. This preserves the requested audit-before-implementation order. The material blockers discovered are:
+
+1. **Official technical guidance is missing:** evaluation details, Docker/runtime contract, model rules, output validator, and challenge-specific limits.
+2. **Business-rule execution is incomplete:** passing a rulebook to the planner does not implement its rules; returns/cancellations, vouchers, VAT/shipping, costing, debt, inventory, and lunar-calendar requirements need traceable executable behavior or abstention.
+3. **No real model evidence:** the pipeline is validated with synthetic fixtures and stubs only.
+4. **Resource/preflight gaps:** no VRAM sufficiency check, generation timeout, or complete multi-model parameter accounting.
+5. **Reproducibility metadata gaps:** run-level source/config/data/checkpoint hashes and environment versions are incomplete.
+6. **Potential code-sharing gate:** the remote GitHub repository is private, but collaborator membership in the competition team was not verified. Regulations §8.2 restricts private sharing of competition-developed source outside the team during the competition. Do not push another change until repository access is confirmed team-only or an explicit challenge exception applies. Existing history is not changed here.
+
+### Milestone B.1 — minimum CUDA storage preflight
+
+After completing the audit, `LocalTransformersBackend` now measures loaded model parameter and buffer storage and checks it against free CUDA memory before moving the model to `cuda:0`. If the minimum storage does not fit, loading fails with a specific error instead of attempting the transfer. The backend retains the parameter/storage and CUDA-memory values for later diagnostics.
+
+Two focused mocked-runtime tests cover rejection before device transfer and the sufficient-minimum-memory path. The full suite now passes 201 tests; no model, GPU, training, or benchmark was used. This is only a lower-bound guard: it explicitly does not guarantee room for generation KV cache or runtime workspaces and does not replace a real hardware smoke test.
+
+## Prioritized next work
+
+| Priority | Work | Gate / evidence to close |
+|---|---|---|
+| P0 | Obtain and archive the official DataMate Rule, Evaluation, and Submission Guidance, including Docker/runtime instructions and evaluator version. | Organizer source URL/file and clause-to-test mapping; do not infer missing contract. |
+| P0 | Confirm allowed collaborators for the private repository and preserve the official code/data-sharing boundary. | Verify every collaborator is on the competition team or obtain an explicit exception; keep source and training data out of public repositories. |
+| P1 | Build a rulebook-to-executor coverage matrix from training rulebook text and add general, synthetic tests for supported semantics; return validated abstention for unsupported rules. | Each rule has provenance, an implemented operation, focused tests, and an explicit unsupported path. |
+| P1 | Extend inference preflight and failure controls: local checkpoint manifest checks, all-component parameter accounting, generation-cache/runtime memory estimate, timeout, and complete configuration/run metadata. | Tests with mocked runtimes; later verify with an eligible local checkpoint and GPU. |
+| P1 | Validate schemas, joins, and streaming behavior against permitted training business packages without touching public/private tests. | Record selected business packages and exact checks; keep outputs outside source data and avoid fabricated labels. |
+| P2 | Finish reviewed QueryPlan annotations, business-heldout validation, evaluator integration, and benchmark only after official metric is obtained. | No annotation from answer gold or validation/test; distinguish plan accuracy, answer accuracy, and official metric. |
+| P2 | Implement Docker/entrypoint/submission only against the official technical guide and run the prescribed container checks. | Organizer-compatible build and batch smoke test; until then remain BLOCKED. |
+
+## Audit conclusion
+
+The codebase is a **tested synthetic-fixture prototype with a model-ready scaffold**, not a verified competition submission. The most valuable existing work is the constrained deterministic execution boundary, read-only loader, explicit plan validation, and honest separation of local diagnostics from official scoring. The most urgent corrections are to obtain challenge-specific technical requirements and make rule execution auditable; no claim of official compliance, model performance, Docker functionality, or submission acceptance is warranted yet.
