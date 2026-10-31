@@ -33,8 +33,9 @@ Các câu hỏi train được đọc có dạng bao gồm tổng phiếu nhập
 - **Nguyên nhân:** `_time_matches` so mốc `str` trong QueryPlan trực tiếp với `date`/`datetime` sau normalization, gây `TypeError`. Chuỗi timestamp cũng bị so từ vựng với ngày cuối kỳ, có thể loại nhầm các phát sinh trong ngày cuối.
 - **Sửa:** so theo ngày lịch; hỗ trợ `date`, `datetime`, chuỗi ISO date/datetime; ngày cuối được tính trọn khi `inclusive_end=True` và bị loại khi là mốc kết thúc độc quyền. Chuỗi ngày sai định dạng bị báo lỗi thay vì cho kết quả lọc từ vựng.
 - **Lỗi precision:** `ratio_percent` và `percent_change` trả về số thập phân tuần hoàn nhiều chữ số, trái với rulebook yêu cầu phần trăm 2 chữ số. Đã làm tròn bằng `ROUND_HALF_UP`, giữ độ chính xác cao trước khi lượng tử hóa và tăng precision cho giá trị lớn.
-- **Test hồi quy:** date và datetime đã chuẩn hóa, timestamp cuối ngày, cận kết thúc độc quyền, ISO text và giá trị ngày sai định dạng; kiểm tra phần trăm âm/nửa lên, min/max/top-K tie-break, period scope, time bucket calendar, cận kết thúc độc quyền khi lấp bucket, giới hạn số group, serialization/evaluator của bảng rỗng, kỳ ngoài độ phủ, kỳ chéo độ phủ và sum 0 trong kỳ có dữ liệu.
-- **Kết quả sau patch bucket trống:** targeted tests **10 passed**; full suite `pytest -q` **141 passed**; `compileall -q src tests scripts` và `git diff --check` thành công.
+- **Lỗi format unanswerable:** rulebook §7 nêu `reason` không bắt buộc; serializer và evaluator trước đó từ chối câu trả lời không có reason. Đã sửa để chấp nhận thiếu reason, đồng thời nếu reason có mặt thì bắt buộc là chuỗi.
+- **Test hồi quy:** date và datetime đã chuẩn hóa, timestamp cuối ngày, cận kết thúc độc quyền, ISO text và giá trị ngày sai định dạng; kiểm tra phần trăm âm/nửa lên, min/max/top-K tie-break, period scope, time bucket calendar, cận kết thúc độc quyền khi lấp bucket, giới hạn số group, serialization/evaluator của bảng rỗng và unanswerable không reason, kỳ ngoài độ phủ, kỳ chéo độ phủ và sum 0 trong kỳ có dữ liệu.
+- **Kết quả gần nhất:** targeted time-bucket tests **10 passed**; targeted submission/evaluator tests **24 passed**; full suite `pytest -q` **143 passed**; `compileall -q src tests scripts` và `git diff --check` thành công.
 
 ## Việc còn yếu / blocker
 

@@ -236,6 +236,38 @@ def test_submission_jsonl_accepts_rulebook_unanswerable_payload(
     assert report["invalid_predictions"] == 0
 
 
+def test_submission_jsonl_accepts_unanswerable_without_optional_reason(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [{"id": "q1", "type": "unanswerable", "answer": None}],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "id": "q1",
+                "type": "unanswerable",
+                "answer": {"type": "unanswerable"},
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+    assert report["invalid_predictions"] == 0
+
+
 def test_submission_jsonl_accepts_year_month_date(
     tmp_path: Path,
 ) -> None:

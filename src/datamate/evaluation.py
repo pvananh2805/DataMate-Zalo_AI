@@ -404,8 +404,11 @@ def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
                 if (
                     isinstance(value, dict)
                     and value.get("type") == "unanswerable"
-                    and isinstance(value.get("reason"), str)
-                    and set(value) == {"type", "reason"}
+                    and set(value) in ({"type"}, {"type", "reason"})
+                    and (
+                        "reason" not in value
+                        or isinstance(value["reason"], str)
+                    )
                 ):
                     canonical = "null"
                 else:

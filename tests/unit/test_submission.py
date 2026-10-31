@@ -62,6 +62,19 @@ def test_submission_formats_unanswerable_and_abstain_separately() -> None:
     assert json.loads(abstain) == {"id": "q-2", "type": "abstain"}
 
 
+def test_submission_allows_unanswerable_without_optional_reason() -> None:
+    record = serialize_submission_record(
+        "q-1",
+        ValidatedAnswer("unanswerable", None, "no_data"),
+    )
+
+    assert json.loads(record) == {
+        "id": "q-1",
+        "type": "unanswerable",
+        "answer": {"type": "unanswerable"},
+    }
+
+
 def test_submission_table_uses_plan_columns_and_keeps_numeric_cells(
 ) -> None:
     table = "sales"

@@ -150,17 +150,13 @@ def serialize_submission_record(
     if answer_type == "abstain":
         record: dict[str, object] = {"id": question_id, "type": "abstain"}
     elif answer_type == "unanswerable":
-        if not answer.explanation or not answer.explanation.strip():
-            raise SubmissionError(
-                "Unanswerable cần reason theo format trong training rulebook"
-            )
+        value: dict[str, object] = {"type": "unanswerable"}
+        if answer.explanation is not None:
+            value["reason"] = answer.explanation
         record = {
             "id": question_id,
             "type": "unanswerable",
-            "answer": {
-                "type": "unanswerable",
-                "reason": answer.explanation,
-            },
+            "answer": value,
         }
     else:
         value: object = answer.value
