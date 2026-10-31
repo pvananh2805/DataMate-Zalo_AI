@@ -182,6 +182,67 @@ def test_replay_reproduces_group_exclusion_plan(tmp_path: Path) -> None:
     assert replay["replay_matches"] is True
 
 
+def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> None:
+    business_root = tmp_path / "businesses"
+    business_root.mkdir()
+    business = business_root / "biz-001"
+    business.mkdir()
+    (business / "orders.csv").write_text(
+        "order_id,status,revenue\n"
+        "O-1,completed,10\n"
+        ",,5\n"
+        "O-2,returned,8\n"
+        ",,2\n",
+        encoding="utf-8",
+    )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "orders"
+    )
+    table_id = table_identifier(table)
+    order_id = ColumnRef(table_id, "order_id")
+    status = ColumnRef(table_id, "status")
+    revenue = ColumnRef(table_id, "revenue")
+    plan = QueryPlan(
+        base_table=table_id,
+        group_exclusions=(
+            GroupExclusion(
+                key=order_id,
+                filters=(Filter(status, "eq", "returned"),),
+            ),
+        ),
+        aggregations=(Aggregation("sum", revenue, "revenue"),),
+        output_type="number",
+    )
+    log_path = tmp_path / "logs" / "sparse-group-runs.jsonl"
+
+    result = execute_and_log_business_plan(
+        business,
+        plan,
+        question_id="q-sparse-group",
+        business_id="biz-001",
+        question="Tính doanh thu, bỏ các đơn trả hàng.",
+        model="manual-plan",
+        log_path=log_path,
+        input_root=business_root,
+        column_coercions={
+            order_id: ColumnCoercion("identifier", fill_down_group="order_id"),
+            status: ColumnCoercion("text", fill_down_group="order_id"),
+            revenue: ColumnCoercion("number"),
+        },
+    )
+
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+    replay = replay_run_record(log_path, "q-sparse-group", business_root)
+
+    assert result.answer.value == 15
+    assert record["input"]["metadata"]["column_coercions"][
+        f"{table_id}.status"
+    ]["fill_down_group"] == "order_id"
+    assert replay["replay_matches"] is True
+
+
 def test_replay_reports_changed_source_data_as_mismatch(tmp_path: Path) -> None:
     business_root = tmp_path / "businesses"
     business_root.mkdir()

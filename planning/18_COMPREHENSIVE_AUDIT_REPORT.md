@@ -73,7 +73,7 @@ The rulebook below is the document packaged with the **training** archive. It is
 | §5 Cost and gross/net profit | PARTIAL | Sums and aggregate-level differences are supported if line cost/profit values are already available. No row-level multiplication of quantity × per-unit cost, weighted lot costing, or enforcement of the stated source-of-cost field. |
 | §6 Industry-specific rules | NOT STARTED | No domain rule executor for cafe size suffixes, pharmacy prescription/active-ingredient/lot-expiry rules, or construction delivery-event counting. Exact text filters may express narrow cases but do not implement these rules. |
 | §7 Unanswerable versus zero; partial/full date coverage | PARTIAL | Pipeline can abstain and uses observed date coverage to mark a wholly out-of-coverage requested range unanswerable. It cannot prove a column is semantically complete; missing schema often becomes a plan/CLI error rather than a validated per-question abstention. |
-| §8 Sparse repeated cells and aliases | NOT STARTED | Loader preserves blank cells as null. It does not forward-fill order/customer/status fields within grouped rows or resolve documented aliases from rulebook context. |
+| §8 Sparse repeated cells and aliases | PARTIAL | Loader preserves blanks as null by default. An explicit per-column `fill_down_group` normalization policy now supports rulebook-confirmed repeated group keys/status fields and is recorded in logs/replay. It is opt-in; alias resolution is still not implemented. |
 | §9 Answer types/schema/reward | PARTIAL | Answer validator, reference JSONL serializer, and local exact-match diagnostics exist. They follow training rulebook conventions, not a verified organizer validator or official metric. |
 | §10 Business vocabulary and units | PARTIAL | Unit conversion can use an explicit base/large-unit/factor mapping and rejects an unknown mapped unit. It does not discover the business mapping reliably or interpret all synonyms/abbreviations itself. |
 
@@ -110,8 +110,9 @@ The existing training-only inventory records 3,000 paired questions/answers acro
 
 ## Test evidence and readiness
 
-- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **201 passed in 3.32s**.
-- **Targeted model/training tests:** **7 passed**, including the new mocked CUDA memory preflight cases.
+- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **204 passed in 3.15s**.
+- **Targeted model/training tests:** **7 passed**, including the mocked CUDA memory preflight cases.
+- **Targeted sparse-cell tests:** **36 passed** across normalization, replay, and pipeline, including configured fill-down and replay behavior.
 - **CLI/build checks:** all eight CLI `--help` checks, `compileall -q src tests scripts`, `git diff --check`, and UTF-8/trailing-whitespace checks passed.
 - **Read-only training-data loader smoke:** 30 businesses, 339 discovered table references, one first row read from each, 115 tables with warnings, zero loader failures. No public/private test data was opened.
 - **Earlier recorded deployment check:** clean dev environment full suite **199 passed**, compileall, eight CLI `--help` checks, and `git diff --check` passed; see `planning/17_DEPLOYMENT_REPORT.md`.
@@ -147,6 +148,12 @@ Ran the existing loader read-only across all 30 permitted training business pack
 After completing the audit, `LocalTransformersBackend` now measures loaded model parameter and buffer storage and checks it against free CUDA memory before moving the model to `cuda:0`. If the minimum storage does not fit, loading fails with a specific error instead of attempting the transfer. The backend retains the parameter/storage and CUDA-memory values for later diagnostics.
 
 Two focused mocked-runtime tests cover rejection before device transfer and the sufficient-minimum-memory path. The full suite now passes 201 tests; no model, GPU, training, or benchmark was used. This is only a lower-bound guard: it explicitly does not guarantee room for generation KV cache or runtime workspaces and does not replace a real hardware smoke test.
+
+### Milestone C.1 — explicit sparse-cell normalization
+
+Added opt-in `fill_down_group` to the existing per-column coercion policy. A policy can explicitly forward-fill a sparse group key and carry a selected field such as order status only while that key remains the same. Blank values are unchanged unless this policy is configured. Unknown group-column references fail explicitly. The policy is part of logged coercion metadata and replay validation, so a replay reuses the same transformation.
+
+Unit tests cover within-group propagation, group boundary reset, and invalid group references. An integration/replay test confirms that explicitly carried returned-order status excludes the entire order and yields a reproducible answer. Targeted normalization/pipeline/replay tests pass (36), and the full suite passes (204); this is a general primitive, not an automatic rulebook parser, and must only be configured where the source rulebook confirms sparse-cell semantics.
 
 ## Prioritized next work
 

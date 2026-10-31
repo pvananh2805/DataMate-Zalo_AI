@@ -112,6 +112,38 @@ mục chứa config. Config cá nhân `config/inference.local.json` được Git
 Các thư mục input/output phải tồn tại phù hợp; output không được nằm trong
 input/data root.
 
+### Chuẩn hóa ô trống lặp lại theo nhóm (tùy chọn)
+
+Mặc định ô trống vẫn là dữ liệu thiếu. Chỉ khi rulebook của business xác nhận
+ô trống ở các dòng tiếp theo lặp lại giá trị của cùng một nhóm, mới khai báo
+`fill_down_group` trong `coercions`. Ví dụ cấu hình một bảng có mã đơn và trạng
+thái được ghi ở dòng đầu:
+
+```json
+{
+  "biz_example": {
+    "orders.csv::orders": {
+      "order_id": {
+        "kind": "identifier",
+        "fill_down_group": "order_id"
+      },
+      "status": {
+        "kind": "text",
+        "fill_down_group": "order_id"
+      }
+    }
+  }
+}
+```
+
+`orders.csv::orders` phải khớp tên bảng được profiler/discovery báo ra. Cột
+nhóm (`order_id`) cũng cần khai báo tự điền tiếp như ví dụ để các dòng có mã
+trống được gắn với nhóm hiện hành. Khi gặp mã đơn mới, trạng thái được điền lại
+từ giá trị trong nhóm mới; không tự điền qua các nhóm. Chỉ cấu hình cho những
+cột mà tài liệu nguồn xác nhận quy tắc này: cấu hình sai có thể biến dữ liệu
+thiếu thực sự thành dữ liệu có giá trị. Chính sách được ghi vào run log và
+được replay cùng kết quả.
+
 ## 4. Chạy inference
 
 Từ thư mục gốc repository:

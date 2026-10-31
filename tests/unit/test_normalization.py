@@ -67,3 +67,52 @@ def test_normalization_rejects_duplicate_columns_and_unknown_policy_names() -> N
                 {"missing": ColumnCoercion("number")},
             )
         )
+
+
+def test_rows_fill_sparse_group_keys_and_values_only_when_explicitly_configured() -> None:
+    rows = normalize_rows(
+        [
+            ("O-1", "completed", "first"),
+            (None, None, "second"),
+            ("O-2", "returned", "third"),
+            (None, None, "fourth"),
+            ("O-2", "unknown", "ungrouped"),
+            ("O-3", None, "new group without status"),
+        ],
+        ("order_id", "status", "note"),
+        {
+            "order_id": ColumnCoercion(
+                "identifier",
+                fill_down_group="order_id",
+            ),
+            "status": ColumnCoercion(
+                "text",
+                fill_down_group="order_id",
+            ),
+        },
+    )
+
+    assert list(rows) == [
+        ("O-1", "completed", "first"),
+        ("O-1", "completed", "second"),
+        ("O-2", "returned", "third"),
+        ("O-2", "returned", "fourth"),
+        ("O-2", "unknown", "ungrouped"),
+        ("O-3", None, "new group without status"),
+    ]
+
+
+def test_fill_down_rejects_unknown_group_column() -> None:
+    rows = normalize_rows(
+        [("value",)],
+        ("status",),
+        {
+            "status": ColumnCoercion(
+                "text",
+                fill_down_group="order_id",
+            )
+        },
+    )
+
+    with pytest.raises(ValueNormalizationError, match="unknown columns"):
+        list(rows)

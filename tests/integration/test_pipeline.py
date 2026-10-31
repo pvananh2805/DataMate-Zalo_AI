@@ -995,6 +995,7 @@ def test_pipeline_logs_success_and_rejects_logs_inside_input_root(tmp_path: Path
         "decimal_separator": ".",
         "thousands_separator": None,
         "date_format": None,
+        "fill_down_group": None,
     }
     with pytest.raises(RunLogError, match="must not be written under input root"):
         execute_and_log_business_plan(

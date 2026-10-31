@@ -23,8 +23,13 @@ class ColumnCoercion:
     decimal_separator: str = "."
     thousands_separator: str | None = None
     date_format: str | None = None
+    fill_down_group: str | None = None
 
     def __post_init__(self) -> None:
+        if self.fill_down_group is not None and (
+            not isinstance(self.fill_down_group, str) or not self.fill_down_group
+        ):
+            raise ValueError("fill-down group must be non-empty text when provided")
         if len(self.decimal_separator) != 1:
             raise ValueError("decimal separator must be one character")
         if (
@@ -160,6 +165,29 @@ def normalize_rows(
         raise ValueNormalizationError(
             f"Coercion references unknown columns: {', '.join(sorted(unknown_columns))}"
         )
+    fill_down_policies = {
+        column: policy.fill_down_group
+        for column, policy in policies.items()
+        if policy.fill_down_group is not None
+    }
+    unknown_group_columns = set(fill_down_policies.values()) - indexes.keys()
+    if unknown_group_columns:
+        raise ValueNormalizationError(
+            "Fill-down group references unknown columns: "
+            + ", ".join(sorted(unknown_group_columns))
+        )
+    self_group_columns = {
+        column
+        for column, group_column in fill_down_policies.items()
+        if column == group_column
+    }
+    other_fill_down_columns = {
+        column: group_column
+        for column, group_column in fill_down_policies.items()
+        if column != group_column
+    }
+    group_state: dict[str, object] = {}
+    value_state: dict[str, tuple[object, object]] = {}
     for row_number, raw_row in enumerate(rows, start=1):
         row = tuple(raw_row)
         if len(row) != len(columns):
@@ -176,4 +204,32 @@ def normalize_rows(
                 raise ValueNormalizationError(
                     f"Row {row_number}: {exc}"
                 ) from exc
+
+        for column in self_group_columns:
+            column_index = indexes[column]
+            value = values[column_index]
+            if value is not None:
+                group_state[column] = value
+            elif column in group_state:
+                value = group_state[column]
+                values[column_index] = value
+
+        for column, group_column in other_fill_down_columns.items():
+            group_value = values[indexes[group_column]]
+            column_index = indexes[column]
+            value = values[column_index]
+            if group_value is None:
+                value_state.pop(column, None)
+                continue
+            previous = value_state.get(column)
+            if previous is None or previous[0] != group_value:
+                if value is None:
+                    value_state.pop(column, None)
+                else:
+                    value_state[column] = (group_value, value)
+                continue
+            if value is None:
+                values[column_index] = previous[1]
+            else:
+                value_state[column] = (group_value, value)
         yield tuple(values)
