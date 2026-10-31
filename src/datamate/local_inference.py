@@ -14,6 +14,39 @@ class LocalModelError(QuestionUnderstandingError):
     """Raised when a local inference checkpoint cannot be loaded or used safely."""
 
 
+def _estimate_kv_cache_bytes(
+    config: Any,
+    *,
+    sequence_tokens: int,
+    bytes_per_value: int,
+) -> int:
+    layers = getattr(config, "num_hidden_layers", None)
+    attention_heads = getattr(config, "num_attention_heads", None)
+    key_value_heads = getattr(config, "num_key_value_heads", None)
+    hidden_size = getattr(config, "hidden_size", None)
+    head_dim = getattr(config, "head_dim", None)
+    if key_value_heads is None:
+        key_value_heads = attention_heads
+    if head_dim is None and (
+        isinstance(hidden_size, int)
+        and not isinstance(hidden_size, bool)
+        and isinstance(attention_heads, int)
+        and not isinstance(attention_heads, bool)
+        and attention_heads > 0
+        and hidden_size % attention_heads == 0
+    ):
+        head_dim = hidden_size // attention_heads
+    dimensions = (layers, key_value_heads, head_dim)
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in dimensions
+    ):
+        raise LocalModelError(
+            "Cannot estimate KV-cache memory from the local model configuration"
+        )
+    return 2 * layers * key_value_heads * head_dim * sequence_tokens * bytes_per_value
+
+
 class LocalTransformersBackend:
     """A lazy-loaded, single-model backend for the model-independent planner adapter."""
 
@@ -44,6 +77,7 @@ class LocalTransformersBackend:
         self.model_name = self.model_path.name
         self.parameter_count: int | None = None
         self.model_storage_bytes: int | None = None
+        self.estimated_kv_cache_bytes: int | None = None
         self.cuda_free_bytes_before_transfer: int | None = None
         self.cuda_total_bytes: int | None = None
         self._model: Any = None
@@ -109,17 +143,24 @@ class LocalTransformersBackend:
             buffer.numel() * buffer.element_size()
             for buffer in model.buffers()
         )
+        estimated_kv_cache_bytes = _estimate_kv_cache_bytes(
+            model.config,
+            sequence_tokens=self.max_prompt_tokens + self.max_new_tokens,
+            bytes_per_value={"fp32": 4, "fp16": 2, "bf16": 2}[self.precision],
+        )
         try:
             free_bytes, total_bytes = torch.cuda.mem_get_info(0)
         except RuntimeError as exc:
             raise LocalModelError(
                 f"Cannot inspect CUDA device memory before loading {self.model_name}"
             ) from exc
-        if model_storage_bytes > free_bytes:
+        required_bytes = model_storage_bytes + estimated_kv_cache_bytes
+        if required_bytes > free_bytes:
             raise LocalModelError(
-                f"Model weights and buffers need at least {model_storage_bytes:,} CUDA "
-                f"bytes, but only {free_bytes:,} are free. This estimate excludes "
-                "generation cache and runtime workspace."
+                f"Model weights, buffers, and estimated KV cache need at least "
+                f"{required_bytes:,} CUDA bytes ({model_storage_bytes:,} weights/buffers "
+                f"+ {estimated_kv_cache_bytes:,} KV cache), but only {free_bytes:,} "
+                "are free. The estimate excludes runtime workspace."
             )
         model.to(torch.device("cuda:0"))
         model.eval()
@@ -128,6 +169,7 @@ class LocalTransformersBackend:
         self._torch = torch
         self.parameter_count = parameter_count
         self.model_storage_bytes = model_storage_bytes
+        self.estimated_kv_cache_bytes = estimated_kv_cache_bytes
         self.cuda_free_bytes_before_transfer = free_bytes
         self.cuda_total_bytes = total_bytes
 

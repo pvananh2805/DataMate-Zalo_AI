@@ -44,7 +44,7 @@ Additional paths prepare manually annotated QueryPlans, validate business-disjoi
 | Evaluation | PARTIAL | Local evaluator validates records and reports exact-match diagnostics by type/business, abstention/unanswerable, invalid/missing output, and latency; unit tests exist. | This is explicitly not official Penalized Accuracy. No QueryPlan-vs-gold evaluation or model-validation score has been produced. | Do not publish local exact-match or test counts as official accuracy. Obtain organizer evaluator and its version before calculating official metrics. |
 | Training-data preparation | PARTIAL | Annotation schema is manually authored `question_id`, `business_id`, `query_plan`; output joins to questions, validates plans, and splits by business; unit tests exist. It refuses to fabricate labels. | No reviewed QueryPlan annotations or actual training run exist. Existing training questions/answers have been inventoried, not converted to fabricated plan labels. | Train/validation business leakage is guarded. Validate annotation policy against the challenge-specific guidance. |
 | Fine-tuning / LoRA / merge | PARTIAL | CUDA-only local scripts, explicit LoRA targets, local-only model loading, parameter checks, and merge/export path exist. CLI/unit-level tests cover validation paths. | No model, CUDA runtime, or training dependencies are available here; training, merge, and exported artifacts are untested. | No training has been run. Verify model/license and the complete parameter accounting rule before using any checkpoint. |
-| Local inference backend | PARTIAL | Local checkpoint path, `local_files_only=True`, `trust_remote_code=False`, offline flags, CUDA requirement, precision selection, prompt/output limits, loaded-model parameter count, and a pre-transfer CUDA free-memory check against the loaded weights/buffers. Unit tests cover insufficient and sufficient mocked VRAM. | No checkpoint/GPU/Transformers smoke test. Memory check is a lower bound and excludes generation cache/runtime workspace; there is no timeout. Parameter count is measured for the single loaded causal LM, not an inventory of any additional inference models. | Model-ready scaffold only. Add model manifest/accounting for every inference component and robust runtime limits; verify actual VRAM behavior only with hardware/checkpoint. |
+| Local inference backend | PARTIAL | Local checkpoint path, `local_files_only=True`, `trust_remote_code=False`, offline flags, CUDA requirement, precision selection, prompt/output limits, loaded-model parameter count, and pre-transfer CUDA check for weights/buffers plus an architecture-derived KV-cache estimate at the configured maximum sequence length. Unit tests cover missing dimensions, insufficient memory, and exact-fit mocked VRAM. | No checkpoint/GPU/Transformers smoke test. Estimate excludes runtime workspace and may be conservative; there is no timeout. Parameter count is measured for the single loaded causal LM, not an inventory of any additional inference models. | Model-ready scaffold only. Add model manifest/accounting for every inference component and runtime limits; verify actual VRAM behavior only with hardware/checkpoint. |
 | Manual testing | DONE | Runner and synthetic 100-question example bundle exist; prior run processed 100/100 with a stub planner, including 80 labeled expected answers. | Synthetic fixture and scripted plans only; it is not an AI benchmark or challenge-data score. User-owned root manual-test files remain ignored/untracked. | Keep the user's manual-test files separate from official training/test material. |
 | Submission serializer | PARTIAL | Atomic JSONL writer validates answer types/IDs and rejects duplicates; tests exist. It follows the training rulebook reference shape. | No organizer validator or Docker contract was run. | Output schema and answer nuances remain unverified against official challenge guidance. |
 | Docker / entrypoint | BLOCKED | No Dockerfile, Compose file, or Docker-specific entrypoint was found. Batch inference CLI exists independently. | Docker CLI is unavailable; official Docker/runtime guide is not accessible through the current portal API. No image was built or run. | Do not invent paths, mounts, base image, or resource limits. Obtain the official guide and then implement and test the exact interface. |
@@ -110,7 +110,7 @@ The existing training-only inventory records 3,000 paired questions/answers acro
 
 ## Test evidence and readiness
 
-- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **207 passed in 3.08s**.
+- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **209 passed in 3.25s**.
 - **Targeted model/training tests:** **7 passed**, including the mocked CUDA memory preflight cases.
 - **Targeted sparse-cell tests:** **42 passed** across normalization, inference configuration, replay, and pipeline, including configured fill-down and exact-row deduplication behavior.
 - **CLI/build checks:** all eight CLI `--help` checks, `compileall -q src tests scripts`, `git diff --check`, and UTF-8/trailing-whitespace checks passed.
@@ -123,7 +123,7 @@ The existing training-only inventory records 3,000 paired questions/answers acro
 
 | Readiness area | Status | Reason |
 |---|---|---|
-| Model-ready | PARTIAL | Local-only Transformers adapter, one-model parameter guard, and minimum CUDA storage preflight for weights/buffers exist; no checkpoint, GPU validation, multi-model parameter inventory, KV-cache/runtime-memory estimate, or model benchmark. |
+| Model-ready | PARTIAL | Local-only Transformers adapter, one-model parameter guard, and pre-transfer weights/buffers plus KV-cache estimate exist; no checkpoint, GPU validation, multi-model parameter inventory, complete runtime-memory estimate, or model benchmark. |
 | Training-ready | PARTIAL | Human annotation schema, business-heldout split, validation, training and merge scripts exist; no reviewed annotations or executed training/export. |
 | Docker-ready | BLOCKED | Official Docker/runtime guidance unavailable; no Dockerfile/entrypoint or Docker runtime verification. |
 | Submission-ready | BLOCKED | Serializer exists but exact schema, evaluator, artifact contract, and runner interface are unverified. |
@@ -135,7 +135,7 @@ No source code was changed during Giai đoạn A. This preserves the requested a
 1. **Official technical guidance is missing:** evaluation details, Docker/runtime contract, model rules, output validator, and challenge-specific limits.
 2. **Business-rule execution is incomplete:** passing a rulebook to the planner does not implement its rules; returns/cancellations, vouchers, VAT/shipping, costing, debt, inventory, and lunar-calendar requirements need traceable executable behavior or abstention.
 3. **No real model evidence:** the pipeline is validated with synthetic fixtures and stubs only.
-4. **Resource/preflight gaps:** no VRAM sufficiency check, generation timeout, or complete multi-model parameter accounting.
+4. **Resource/preflight gaps:** KV cache has a static lower-bound estimate, but runtime workspace is excluded; no generation timeout or complete multi-model parameter accounting.
 5. **Reproducibility metadata gaps:** run-level source/config/data/checkpoint hashes and environment versions are incomplete.
 6. **Code-sharing gate:** the remote GitHub repository is private and the GitHub collaborator list returned only `pvananh2805` on 2026-10-31. No other direct repository access was listed. Regulations §8.2 restricts private sharing of competition-developed source outside the team during the competition; keep this repository private and recheck access before adding collaborators or publishing code. Training data/checkpoints are not part of the audited commits.
 
@@ -147,7 +147,7 @@ Ran the existing loader read-only across all 30 permitted training business pack
 
 After completing the audit, `LocalTransformersBackend` now measures loaded model parameter and buffer storage and checks it against free CUDA memory before moving the model to `cuda:0`. If the minimum storage does not fit, loading fails with a specific error instead of attempting the transfer. The backend retains the parameter/storage and CUDA-memory values for later diagnostics.
 
-Two focused mocked-runtime tests cover rejection before device transfer and the sufficient-minimum-memory path. The full suite now passes 201 tests; no model, GPU, training, or benchmark was used. This is only a lower-bound guard: it explicitly does not guarantee room for generation KV cache or runtime workspaces and does not replace a real hardware smoke test.
+Two focused mocked-runtime tests cover rejection before device transfer and the sufficient-minimum-memory path. The full suite then passed 201 tests; no model, GPU, training, or benchmark was used. The initial storage guard did not account for KV cache.
 
 ### Milestone C.1 — explicit sparse-cell normalization
 
@@ -160,6 +160,12 @@ Unit tests cover within-group propagation, group boundary reset, and invalid gro
 Added opt-in `deduplicate_group` to the same explicit coercion policy. It compares the complete normalized row after configured fill-down and suppresses a row only when an identical row has already occurred for that group. Rows in different groups, ungrouped rows, and non-identical lines remain distinct. The single-group policy is validated, the work is capped at 100,000 unique grouped rows to bound memory, and reaching the cap fails explicitly rather than silently dropping deduplication. The field is recorded in run metadata and accepted by replay.
 
 Tests cover exact duplicate removal, retaining different lines and other-group rows, preserving ungrouped rows, limit failure, JSON configuration, and replayed end-to-end sales totals. The combined targeted suite passes (42), and the complete suite passes (207), with compile, CLI, and diff checks green. This remains opt-in: it must be enabled only where the rulebook and business source confirm the grouping key and exact-duplicate semantics.
+
+### Milestone D.2 — conservative KV-cache preflight
+
+The backend now estimates single-request KV-cache bytes from local model config (layer count, KV heads, head dimension, configured maximum prompt plus generation tokens, and selected precision). Before device transfer it requires free CUDA memory for both loaded weights/buffers and the estimate. Unsupported/missing dimensions fail closed; an exact-fit and a cache-insufficient path are covered with mocked runtime tests. The estimate assumes full-context KV storage and excludes runtime workspace, allocator fragmentation, and implementation-specific overhead; it is not a GPU benchmark and cannot certify a checkpoint will run.
+
+The focused local-inference/CLI integration tests pass (9), and the full suite passes (209); compileall, all eight CLI help checks, and diff checks pass. No model or GPU was used.
 
 ## Prioritized next work
 

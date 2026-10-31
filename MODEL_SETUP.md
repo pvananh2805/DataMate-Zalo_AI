@@ -81,7 +81,9 @@ python -c "import torch, transformers; print(torch.__version__); print(transform
 Inference hiện từ chối chạy nếu CUDA không khả dụng; không có CPU fallback.
 Precision mặc định là `bf16`, chỉ chạy nếu GPU hỗ trợ. Nếu GPU hỗ trợ FP16 nhưng
 không hỗ trợ BF16, có thể cấu hình `fp16`. Không thể suy ra VRAM cần thiết chỉ
-từ tên model; hãy đo trên checkpoint, prompt length và GPU thực tế.
+từ tên model. Backend có ước lượng sơ bộ bộ nhớ weights và KV cache từ config,
+precision, giới hạn prompt/output; ước lượng này không gồm workspace/fragmentation
+và không thay thế smoke test trên GPU thực tế.
 
 ## 3. Khai báo đường dẫn model
 

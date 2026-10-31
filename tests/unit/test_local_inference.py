@@ -36,6 +36,12 @@ def _fake_cuda_backend(tmp_path, monkeypatch, *, free_bytes: int):
 
     class FakeModel:
         moved_to = None
+        config = SimpleNamespace(
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            hidden_size=8,
+        )
 
         def parameters(self):
             return [FakeTensor(4, 2)]
@@ -98,12 +104,48 @@ def test_local_backend_records_cuda_memory_and_model_storage(
     tmp_path,
     monkeypatch,
 ) -> None:
-    backend, model = _fake_cuda_backend(tmp_path, monkeypatch, free_bytes=16)
+    estimated_cache_bytes = 2 * 2 * 1 * 4 * (16_384 + 1_024) * 2
+    backend, model = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=16 + estimated_cache_bytes,
+    )
 
     backend.load()
 
     assert model.moved_to == "cuda:0"
     assert backend.parameter_count == 4
     assert backend.model_storage_bytes == 16
-    assert backend.cuda_free_bytes_before_transfer == 16
+    assert backend.estimated_kv_cache_bytes == estimated_cache_bytes
+    assert backend.cuda_free_bytes_before_transfer == 16 + estimated_cache_bytes
     assert backend.cuda_total_bytes == 4096
+
+
+def test_local_backend_rejects_cuda_memory_without_room_for_estimated_cache(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    estimated_cache_bytes = 2 * 2 * 1 * 4 * (16_384 + 1_024) * 2
+    backend, model = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=15 + estimated_cache_bytes,
+    )
+
+    with pytest.raises(LocalModelError, match="estimated KV cache"):
+        backend.load()
+
+    assert model.moved_to is None
+
+
+def test_local_backend_requires_supported_cache_dimensions_in_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, model = _fake_cuda_backend(tmp_path, monkeypatch, free_bytes=1_000_000)
+    model.config = SimpleNamespace()
+
+    with pytest.raises(LocalModelError, match="Cannot estimate KV-cache"):
+        backend.load()
+
+    assert model.moved_to is None
