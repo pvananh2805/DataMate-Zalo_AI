@@ -1,7 +1,7 @@
 # Trạng thái dự án DataMate
 
 **Cập nhật:** 2026-10-31
-**Mốc code đã xác minh trước thay đổi hiện tại:** `dda9621` (schema profiling và lõi truy vấn xác định; đã đẩy lên repository riêng).
+**Mốc code đã xác minh trước thay đổi hiện tại:** `5424329` (evaluator alias list/table; đã đẩy lên repository riêng).
 
 ## Đã triển khai và kiểm chứng
 
@@ -23,10 +23,10 @@
 - Đã thêm kiểm tra kiểu câu trả lời, finite number/percent, date, boolean, list/table, evidence và các trạng thái no-data/unanswerable/ambiguous/insufficient-data/abstain. Pipeline `execute_business_plan` nối loader → plan validation → executor → answer validation trên fixture SQLite.
 - Nhánh question-to-plan đã có đường abstain/unanswerable rõ ràng: `ambiguous`, `insufficient_data`, `unanswerable` hoặc `abstained` được log với lý do và không giả lập execution/evidence; `no_data` chỉ được gán sau khi executor thực sự chạy và không có dòng khớp.
 - Vì `QueryPlan.business_rules` chưa có executor, `validate_query_plan` hiện từ chối mọi rule tag không rỗng; prompt cũng yêu cầu planner không khai báo đã áp dụng quy tắc và abstain nếu không thể biểu diễn bằng thao tác xác định đã hỗ trợ. Nội dung rulebook chưa được tự động áp dụng hoặc bảo đảm bao phủ.
-- Đã nối logging JSONL cho pipeline: lưu input, model, QueryPlan, trace, evidence, answer, thời gian và lỗi đã nhận diện; có đọc lại/kiểm schema log và chặn ghi trong input root. Chưa có chức năng tái thực thi từ log.
+- Đã nối logging JSONL cho pipeline: lưu input, model, QueryPlan, trace, evidence, answer, thời gian, lỗi, coercion và giới hạn thực thi; có đọc/kiểm schema log và chặn ghi trong input root. `scripts/replay_run.py` tái thực thi một QueryPlan đã ghi bằng dữ liệu cục bộ và đối chiếu answer/evidence cùng execution trace; mismatch được báo rõ khi kết quả thay đổi. Đây không tái chạy model/planner và chưa lưu phiên bản dependency/checkpoint hoặc checksum dữ liệu.
 - Đã thêm `scripts/evaluate_predictions.py` và `src/datamate/evaluation.py`: so khớp theo answer type/value, breakdown theo loại/business, missing/extra/invalid, unanswerable và latency; xử lý Decimal trong list/table từ run log; so alias string, alias từng phần tử list và alias tên dòng table; chuẩn hóa hoa thường/khoảng trắng/dấu câu nhưng giữ nguyên dấu tiếng Việt.
 - Đã đối chiếu §9 của `data/train/train/rulebook.md`: tài liệu training ghi cấu trúc dòng `id/type/answer`, các format answer (bao gồm table/unanswerable), và reward mỗi câu đúng/sai/abstain `+1/-1/0`. Nhãn training có 42 đáp án string/49 alias, 106 đáp án list/251 alias item và 19 bảng/71 alias dòng. Evaluator phân biệt submission với run log nội bộ, kiểm tra format JSON number/date/table/unanswerable/abstain, so bảng không phụ thuộc thứ tự dòng và theo tên cột hoặc vị trí; báo strict-local reward sum. Công thức aggregate Penalized Accuracy và việc schema khớp validator hiện hành chưa được xác minh; các quy tắc xếp hạng/tie-break của list chưa được kiểm chứng đầy đủ, nên report không gọi metric này là điểm chính thức.
-- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **107 passed**; `compileall` cho `src`, `tests`, `scripts` và `git diff --check` thành công. CLI trợ giúp inference hiển thị UTF-8 trên Windows. Chưa load/training model thật do không có GPU/checkpoint hợp lệ.
+- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **112 passed**; `compileall` cho `src`, `tests`, `scripts`, `git diff --check` và CLI trợ giúp replay trên Windows thành công. Chưa load/training model thật do không có GPU/checkpoint hợp lệ.
 - Public-test archive vẫn nguyên trạng, chưa giải nén/đọc. Không có dữ liệu training/public-test trong source commit trước đó.
 
 ## Đã triển khai nhưng chưa đủ để dùng trong inference cuộc thi
@@ -48,7 +48,7 @@
 | Model selection/offline inference | Backend và CLI offline đã chuẩn bị nhưng chưa tải model; chưa benchmark parameter count thực, ngày phát hành, license, tiếng Việt, tốc độ/RAM và chất lượng QueryPlan. |
 | Training/fine-tuning | Đã có pipeline annotation thủ công/group split, script offline GPU full/LoRA, validation theo eval loss và merge/export; chưa có annotation thực, model/checkpoint được chọn, dependency GPU, lần chạy training hoặc đánh giá chất lượng sau fine-tune. QLoRA chưa triển khai. |
 | Evaluation | Đã có evaluator local với string/list/table aliases và diagnostic reward sum; chưa chạy trên model/validation thực, chưa bao phủ đầy đủ list ranking/tie-break rules, chưa xác minh phép tổng hợp PA chính thức và không công bố điểm PA. |
-| Logging/reproducibility | Đã có JSONL log input/plan/trace/evidence/answer/lỗi; chưa có chức năng tái chạy end-to-end từ log, lưu phiên bản dependency và checkpoint. |
+| Logging/reproducibility | Có JSONL log và replay xác định QueryPlan đã ghi, đối chiếu answer/trace; chưa tái chạy planner/model, ghi checksum dữ liệu, dependency lock hoặc checkpoint revision. |
 | Docker/submission | Docker CLI chưa có; chưa xác minh Docker guideline, entrypoint/đường dẫn và schema `id/type/answer` với submission validator hiện hành. |
 | Tài liệu cuộc thi | Portal xác nhận mô tả cấp cao và `.jsonl`; training rulebook có format/reward tham khảo; regulations chỉ trả SPA shell. Giới hạn 15B, ngày phát hành, license, quy tắc offline/dữ liệu, cách tổng hợp PA và Docker vẫn cần văn bản chính thức để xác minh. |
 

@@ -33,6 +33,11 @@ class PipelineError(RuntimeError):
     """Raised when an execution result cannot be mapped to a typed answer."""
 
 
+_DEFAULT_MAX_JOIN_ROWS = 100_000
+_DEFAULT_MAX_GROUPS = 100_000
+_DEFAULT_MAX_RESULT_ROWS = 10_000
+
+
 @dataclass(frozen=True)
 class BusinessSchema:
     tables: dict[str, TableRef]
@@ -114,9 +119,9 @@ def execute_business_plan(
     business_dir: Path | str,
     plan: QueryPlan,
     *,
-    max_join_rows: int = 100_000,
-    max_groups: int = 100_000,
-    max_result_rows: int = 10_000,
+    max_join_rows: int = _DEFAULT_MAX_JOIN_ROWS,
+    max_groups: int = _DEFAULT_MAX_GROUPS,
+    max_result_rows: int = _DEFAULT_MAX_RESULT_ROWS,
     column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
 ) -> PipelineResult:
     """Discover the local schema and execute a plan using only approved readers."""
@@ -205,7 +210,8 @@ def execute_business_plan(
     return PipelineResult(answer=answer, execution=execution, plan=plan)
 
 
-def _abstention_result(plan: QueryPlan) -> PipelineResult:
+def abstention_result(plan: QueryPlan) -> PipelineResult:
+    """Validate a planner-provided abstention without executing business data."""
     status = plan.metadata.get("status")
     reason = plan.metadata.get("reason")
     if not isinstance(reason, str) or not reason.strip():
@@ -270,7 +276,15 @@ def execute_and_log_business_plan(
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 plan=plan,
                 error=f"{type(exc).__name__}: {exc}",
-                input_metadata=_log_metadata(input_metadata, column_coercions),
+                input_metadata=_log_metadata(
+                    input_metadata,
+                    column_coercions,
+                    execution_limits={
+                        "max_join_rows": _DEFAULT_MAX_JOIN_ROWS,
+                        "max_groups": _DEFAULT_MAX_GROUPS,
+                        "max_result_rows": _DEFAULT_MAX_RESULT_ROWS,
+                    },
+                ),
             ),
             forbidden_roots=(input_root,),
         )
@@ -287,7 +301,15 @@ def execute_and_log_business_plan(
             plan=plan,
             execution=result.execution.trace,
             answer=result.answer,
-            input_metadata=_log_metadata(input_metadata, column_coercions),
+            input_metadata=_log_metadata(
+                input_metadata,
+                column_coercions,
+                execution_limits={
+                    "max_join_rows": _DEFAULT_MAX_JOIN_ROWS,
+                    "max_groups": _DEFAULT_MAX_GROUPS,
+                    "max_result_rows": _DEFAULT_MAX_RESULT_ROWS,
+                },
+            ),
         ),
         forbidden_roots=(input_root,),
     )
@@ -311,9 +333,9 @@ def execute_question_and_log(
     calendar_rows: tuple[Mapping[str, str], ...] = (),
     input_metadata: dict[str, object] | None = None,
     column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
-    max_join_rows: int = 100_000,
-    max_groups: int = 100_000,
-    max_result_rows: int = 10_000,
+    max_join_rows: int = _DEFAULT_MAX_JOIN_ROWS,
+    max_groups: int = _DEFAULT_MAX_GROUPS,
+    max_result_rows: int = _DEFAULT_MAX_RESULT_ROWS,
 ) -> PipelineResult:
     """Run question planning, deterministic execution, validation, and logging."""
     validate_log_destination(log_path, forbidden_roots=(input_root,))
@@ -322,7 +344,16 @@ def execute_question_and_log(
     metadata = dict(input_metadata or {})
     if as_of_date is not None:
         metadata["as_of_date"] = as_of_date
-    metadata = _log_metadata(metadata, column_coercions)
+    execution_limits = {
+        "max_join_rows": max_join_rows,
+        "max_groups": max_groups,
+        "max_result_rows": max_result_rows,
+    }
+    metadata = _log_metadata(
+        metadata,
+        column_coercions,
+        execution_limits=execution_limits,
+    )
     try:
         schema = discover_business_schema(business_dir)
         context = QuestionContext(
@@ -336,7 +367,7 @@ def execute_question_and_log(
         )
         plan = planner.create_plan(question, context)
         if plan.output_type in {"unanswerable", "abstain"}:
-            result = _abstention_result(plan)
+            result = abstention_result(plan)
         else:
             result = execute_business_plan(
                 business_dir,
@@ -395,6 +426,8 @@ def execute_question_and_log(
 def _log_metadata(
     metadata: dict[str, object] | None,
     column_coercions: Mapping[ColumnRef, ColumnCoercion] | None,
+    *,
+    execution_limits: Mapping[str, int],
 ) -> dict[str, object]:
     result = dict(metadata or {})
     if column_coercions:
@@ -402,4 +435,5 @@ def _log_metadata(
             f"{ref.table}.{ref.column}": asdict(policy)
             for ref, policy in column_coercions.items()
         }
+    result["execution_limits"] = dict(execution_limits)
     return result
