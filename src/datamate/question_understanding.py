@@ -69,9 +69,11 @@ def build_planning_prompt(question: str, context: QuestionContext) -> str:
         "đoán tên cột hoặc dữ liệu. Trả về đúng một JSON object, không markdown hay lời "
         "dẫn. QueryPlan gồm base_table, joins, selected_columns, filters, group_by, "
         "aggregations, calculations, sort, limit, time_range, business_rules, "
-        "output_type, evidence_requirements, metadata.\n"
+        "output_type, evidence_requirements, metadata. Bắt đầu JSON ngay sau dòng "
+        "'QueryPlan JSON:'.\n"
         "Ngữ cảnh JSON:\n"
         + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\nQueryPlan JSON:\n"
     )
 
 

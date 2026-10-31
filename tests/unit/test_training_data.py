@@ -8,6 +8,10 @@ from datamate.training_data import (
     TrainingDataError,
     prepare_plan_training_data,
 )
+from datamate.training_runner import (
+    TrainingSplitSummary,
+    validate_training_splits,
+)
 
 
 def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -141,3 +145,32 @@ def test_training_data_rejects_mismatched_labels_and_preserves_no_output(
         )
 
     assert not output.exists()
+
+
+def test_training_split_validator_checks_business_leakage_and_plan_json(
+    tmp_path: Path,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+
+    def example(question_id: str, business_id: str) -> dict[str, object]:
+        return {
+            "question_id": question_id,
+            "business_id": business_id,
+            "prompt": "Prompt",
+            "completion": json.dumps(_plan()),
+        }
+
+    _write_jsonl(train_path, [example("q1", "biz_1")])
+    _write_jsonl(validation_path, [example("q2", "biz_2")])
+
+    assert validate_training_splits(train_path, validation_path) == TrainingSplitSummary(
+        train_examples=1,
+        validation_examples=1,
+        train_businesses=1,
+        validation_businesses=1,
+    )
+
+    _write_jsonl(validation_path, [example("q2", "biz_1")])
+    with pytest.raises(TrainingDataError, match="Business leakage"):
+        validate_training_splits(train_path, validation_path)
