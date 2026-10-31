@@ -116,3 +116,61 @@ def test_fill_down_rejects_unknown_group_column() -> None:
 
     with pytest.raises(ValueNormalizationError, match="unknown columns"):
         list(rows)
+
+
+def test_rows_deduplicate_exact_duplicates_only_within_configured_group() -> None:
+    rows = normalize_rows(
+        [
+            ("O-1", "item-a", 2),
+            ("O-1", "item-a", 2),
+            ("O-1", "item-a", 3),
+            ("O-2", "item-a", 2),
+            (None, "item-a", 2),
+            (None, "item-a", 2),
+        ],
+        ("order_id", "product", "quantity"),
+        {
+            "order_id": ColumnCoercion(
+                "identifier",
+                fill_down_group="order_id",
+                deduplicate_group="order_id",
+            )
+        },
+    )
+
+    assert list(rows) == [
+        ("O-1", "item-a", 2),
+        ("O-1", "item-a", 3),
+        ("O-2", "item-a", 2),
+    ]
+    ungrouped_rows = normalize_rows(
+        [(None, "item-a", 2), (None, "item-a", 2)],
+        ("order_id", "product", "quantity"),
+        {
+            "order_id": ColumnCoercion(
+                "identifier",
+                deduplicate_group="order_id",
+            )
+        },
+    )
+    assert list(ungrouped_rows) == [
+        (None, "item-a", 2),
+        (None, "item-a", 2),
+    ]
+
+
+def test_exact_row_deduplication_fails_closed_at_its_bound() -> None:
+    rows = normalize_rows(
+        [("O-1", "A"), ("O-1", "B")],
+        ("order_id", "product"),
+        {
+            "order_id": ColumnCoercion(
+                "identifier",
+                deduplicate_group="order_id",
+            )
+        },
+        max_dedup_rows=1,
+    )
+
+    with pytest.raises(ValueNormalizationError, match="row limit"):
+        list(rows)

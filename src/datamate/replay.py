@@ -33,6 +33,7 @@ _COERCION_FIELDS = {
     "thousands_separator",
     "date_format",
     "fill_down_group",
+    "deduplicate_group",
 }
 _COERCION_KINDS = {
     "number",

@@ -69,6 +69,7 @@ def test_coercion_config_reads_explicit_sparse_group_policy(tmp_path: Path) -> N
                         "order_id": {
                             "kind": "identifier",
                             "fill_down_group": "order_id",
+                            "deduplicate_group": "order_id",
                         },
                         "status": {
                             "kind": "text",
@@ -88,6 +89,7 @@ def test_coercion_config_reads_explicit_sparse_group_policy(tmp_path: Path) -> N
             ColumnRef("orders.csv::orders", "order_id"): ColumnCoercion(
                 "identifier",
                 fill_down_group="order_id",
+                deduplicate_group="order_id",
             ),
             ColumnRef("orders.csv::orders", "status"): ColumnCoercion(
                 "text",

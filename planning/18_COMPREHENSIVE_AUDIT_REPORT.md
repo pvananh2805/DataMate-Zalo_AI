@@ -73,7 +73,7 @@ The rulebook below is the document packaged with the **training** archive. It is
 | §5 Cost and gross/net profit | PARTIAL | Sums and aggregate-level differences are supported if line cost/profit values are already available. No row-level multiplication of quantity × per-unit cost, weighted lot costing, or enforcement of the stated source-of-cost field. |
 | §6 Industry-specific rules | NOT STARTED | No domain rule executor for cafe size suffixes, pharmacy prescription/active-ingredient/lot-expiry rules, or construction delivery-event counting. Exact text filters may express narrow cases but do not implement these rules. |
 | §7 Unanswerable versus zero; partial/full date coverage | PARTIAL | Pipeline can abstain and uses observed date coverage to mark a wholly out-of-coverage requested range unanswerable. It cannot prove a column is semantically complete; missing schema often becomes a plan/CLI error rather than a validated per-question abstention. |
-| §8 Sparse repeated cells and aliases | PARTIAL | Loader preserves blanks as null by default. An explicit per-column `fill_down_group` normalization policy now supports rulebook-confirmed repeated group keys/status fields and is recorded in logs/replay. It is opt-in; alias resolution and suppression of exact duplicate rows within one order are not implemented. |
+| §8 Sparse repeated cells and aliases | PARTIAL | Loader preserves blanks as null by default. Explicit `fill_down_group` supports confirmed repeated cells; `deduplicate_group` can suppress exact duplicate normalized rows only within a configured group. Both policies are logged/replayed and opt-in. Alias resolution is not implemented. |
 | §9 Answer types/schema/reward | PARTIAL | Answer validator, reference JSONL serializer, and local exact-match diagnostics exist. They follow training rulebook conventions, not a verified organizer validator or official metric. |
 | §10 Business vocabulary and units | PARTIAL | Unit conversion can use an explicit base/large-unit/factor mapping and rejects an unknown mapped unit. It does not discover the business mapping reliably or interpret all synonyms/abbreviations itself. |
 
@@ -110,9 +110,9 @@ The existing training-only inventory records 3,000 paired questions/answers acro
 
 ## Test evidence and readiness
 
-- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **205 passed**.
+- **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **207 passed in 3.08s**.
 - **Targeted model/training tests:** **7 passed**, including the mocked CUDA memory preflight cases.
-- **Targeted sparse-cell tests:** **36 passed** across normalization, replay, and pipeline, including configured fill-down and replay behavior.
+- **Targeted sparse-cell tests:** **42 passed** across normalization, inference configuration, replay, and pipeline, including configured fill-down and exact-row deduplication behavior.
 - **CLI/build checks:** all eight CLI `--help` checks, `compileall -q src tests scripts`, `git diff --check`, and UTF-8/trailing-whitespace checks passed.
 - **Read-only training-data loader smoke:** 30 businesses, 339 discovered table references, one first row read from each, 115 tables with warnings, zero loader failures. No public/private test data was opened.
 - **Earlier recorded deployment check:** clean dev environment full suite **199 passed**, compileall, eight CLI `--help` checks, and `git diff --check` passed; see `planning/17_DEPLOYMENT_REPORT.md`.
@@ -153,7 +153,13 @@ Two focused mocked-runtime tests cover rejection before device transfer and the 
 
 Added opt-in `fill_down_group` to the existing per-column coercion policy. A policy can explicitly forward-fill a sparse group key and carry a selected field such as order status only while that key remains the same. Blank values are unchanged unless this policy is configured. Unknown group-column references fail explicitly. The policy is part of logged coercion metadata and replay validation, so a replay reuses the same transformation.
 
-Unit tests cover within-group propagation, group boundary reset, and invalid group references. Integration tests confirm JSON configuration loading, returned-order exclusion, and deterministic replay. Targeted normalization, inference-config, pipeline, and replay tests pass (40); the full suite passes (205). This is a general primitive, not an automatic rulebook parser, and must only be configured where the source rulebook confirms sparse-cell semantics.
+Unit tests cover within-group propagation, group boundary reset, and invalid group references. Integration tests confirm JSON configuration loading, returned-order exclusion, and deterministic replay. The combined targeted suite passes (42); the full suite passes (207). This is a general primitive, not an automatic rulebook parser, and must only be configured where the source rulebook confirms sparse-cell semantics.
+
+### Milestone C.2 — exact duplicate rows within a configured group
+
+Added opt-in `deduplicate_group` to the same explicit coercion policy. It compares the complete normalized row after configured fill-down and suppresses a row only when an identical row has already occurred for that group. Rows in different groups, ungrouped rows, and non-identical lines remain distinct. The single-group policy is validated, the work is capped at 100,000 unique grouped rows to bound memory, and reaching the cap fails explicitly rather than silently dropping deduplication. The field is recorded in run metadata and accepted by replay.
+
+Tests cover exact duplicate removal, retaining different lines and other-group rows, preserving ungrouped rows, limit failure, JSON configuration, and replayed end-to-end sales totals. The combined targeted suite passes (42), and the complete suite passes (207), with compile, CLI, and diff checks green. This remains opt-in: it must be enabled only where the rulebook and business source confirm the grouping key and exact-duplicate semantics.
 
 ## Prioritized next work
 

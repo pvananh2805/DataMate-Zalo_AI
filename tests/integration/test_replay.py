@@ -191,6 +191,7 @@ def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> Non
         "order_id,status,revenue\n"
         "O-1,completed,10\n"
         ",,5\n"
+        ",,5\n"
         "O-2,returned,8\n"
         ",,2\n",
         encoding="utf-8",
@@ -227,7 +228,11 @@ def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> Non
         log_path=log_path,
         input_root=business_root,
         column_coercions={
-            order_id: ColumnCoercion("identifier", fill_down_group="order_id"),
+            order_id: ColumnCoercion(
+                "identifier",
+                fill_down_group="order_id",
+                deduplicate_group="order_id",
+            ),
             status: ColumnCoercion("text", fill_down_group="order_id"),
             revenue: ColumnCoercion("number"),
         },
@@ -240,6 +245,9 @@ def test_replay_preserves_explicit_sparse_group_fill_down(tmp_path: Path) -> Non
     assert record["input"]["metadata"]["column_coercions"][
         f"{table_id}.status"
     ]["fill_down_group"] == "order_id"
+    assert record["input"]["metadata"]["column_coercions"][
+        f"{table_id}.order_id"
+    ]["deduplicate_group"] == "order_id"
     assert replay["replay_matches"] is True
 
 

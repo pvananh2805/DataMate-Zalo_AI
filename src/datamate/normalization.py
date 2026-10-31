@@ -24,12 +24,15 @@ class ColumnCoercion:
     thousands_separator: str | None = None
     date_format: str | None = None
     fill_down_group: str | None = None
+    deduplicate_group: str | None = None
 
     def __post_init__(self) -> None:
-        if self.fill_down_group is not None and (
-            not isinstance(self.fill_down_group, str) or not self.fill_down_group
+        for field_name, group in (
+            ("fill-down", self.fill_down_group),
+            ("deduplication", self.deduplicate_group),
         ):
-            raise ValueError("fill-down group must be non-empty text when provided")
+            if group is not None and (not isinstance(group, str) or not group):
+                raise ValueError(f"{field_name} group must be non-empty text")
         if len(self.decimal_separator) != 1:
             raise ValueError("decimal separator must be one character")
         if (
@@ -155,8 +158,16 @@ def normalize_rows(
     rows: Iterable[Sequence[object]],
     columns: Sequence[str],
     policies: Mapping[str, ColumnCoercion],
+    *,
+    max_dedup_rows: int = 100_000,
 ) -> Iterable[tuple[object, ...]]:
     """Normalize each row lazily, preserving bounded-memory streaming."""
+    if (
+        isinstance(max_dedup_rows, bool)
+        or not isinstance(max_dedup_rows, int)
+        or max_dedup_rows < 1
+    ):
+        raise ValueError("max_dedup_rows must be positive")
     if len(set(columns)) != len(columns):
         raise ValueNormalizationError("Duplicate column names cannot be normalized safely")
     indexes = {column: index for index, column in enumerate(columns)}
@@ -171,9 +182,20 @@ def normalize_rows(
         if policy.fill_down_group is not None
     }
     unknown_group_columns = set(fill_down_policies.values()) - indexes.keys()
+    deduplicate_policies = {
+        column: policy.deduplicate_group
+        for column, policy in policies.items()
+        if policy.deduplicate_group is not None
+    }
+    deduplicate_group_columns = set(deduplicate_policies.values())
+    if len(deduplicate_group_columns) > 1:
+        raise ValueNormalizationError(
+            "Exact-row deduplication supports one group column per table"
+        )
+    unknown_group_columns.update(set(deduplicate_policies.values()) - indexes.keys())
     if unknown_group_columns:
         raise ValueNormalizationError(
-            "Fill-down group references unknown columns: "
+            "Normalization group references unknown columns: "
             + ", ".join(sorted(unknown_group_columns))
         )
     self_group_columns = {
@@ -188,6 +210,8 @@ def normalize_rows(
     }
     group_state: dict[str, object] = {}
     value_state: dict[str, tuple[object, object]] = {}
+    seen_rows: dict[object, set[tuple[object, ...]]] = {}
+    seen_row_count = 0
     for row_number, raw_row in enumerate(rows, start=1):
         row = tuple(raw_row)
         if len(row) != len(columns):
@@ -232,4 +256,28 @@ def normalize_rows(
                 values[column_index] = previous[1]
             else:
                 value_state[column] = (group_value, value)
-        yield tuple(values)
+        row_values = tuple(values)
+        if deduplicate_group_columns:
+            group_column = next(iter(deduplicate_group_columns))
+            group_value = values[indexes[group_column]]
+        else:
+            group_value = None
+        if group_value is not None:
+            try:
+                group_rows = seen_rows.setdefault(group_value, set())
+                if row_values in group_rows:
+                    continue
+                else:
+                    if seen_row_count >= max_dedup_rows:
+                        raise ValueNormalizationError(
+                            "Exact-row deduplication exceeded the configured "
+                            f"row limit ({max_dedup_rows})"
+                        )
+                    group_rows.add(row_values)
+                    seen_row_count += 1
+            except TypeError as exc:
+                raise ValueNormalizationError(
+                    f"Row {row_number}: deduplication group and row values "
+                    "must be hashable"
+                ) from exc
+        yield row_values

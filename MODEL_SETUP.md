@@ -125,7 +125,8 @@ thái được ghi ở dòng đầu:
     "orders.csv::orders": {
       "order_id": {
         "kind": "identifier",
-        "fill_down_group": "order_id"
+        "fill_down_group": "order_id",
+        "deduplicate_group": "order_id"
       },
       "status": {
         "kind": "text",
@@ -143,6 +144,13 @@ từ giá trị trong nhóm mới; không tự điền qua các nhóm. Chỉ c�
 cột mà tài liệu nguồn xác nhận quy tắc này: cấu hình sai có thể biến dữ liệu
 thiếu thực sự thành dữ liệu có giá trị. Chính sách được ghi vào run log và
 được replay cùng kết quả.
+
+Nếu rulebook xác nhận các dòng giống hệt nhau trong cùng một đơn là lỗi xuất
+file và chỉ được tính một lần, có thể thêm `deduplicate_group` vào chính sách
+cột khóa như ví dụ. So sánh dùng toàn bộ dòng sau chuẩn hóa và fill-down; dòng
+khác nội dung vẫn được giữ, và dòng của đơn khác không bị gộp. Dòng không có mã
+nhóm cũng không bị tự ý loại. Để giữ bộ nhớ hữu hạn, chính sách này dừng với lỗi
+nếu cần theo dõi quá 100.000 dòng khác nhau có nhóm; không cắt bớt âm thầm.
 
 ## 4. Chạy inference
 
