@@ -125,3 +125,29 @@ def test_json_plan_adapter_rejects_hallucinated_columns_and_non_json() -> None:
             lambda _: "```json\n{}\n```",
             model_name="local-test",
         ).create_plan("Tổng?", context)
+
+
+def test_json_plan_adapter_accepts_only_explicit_non_answer_statuses() -> None:
+    context = QuestionContext(schema={TABLE: ("amount",)})
+    ambiguous_plan = {
+        "base_table": TABLE,
+        "output_type": "unanswerable",
+        "metadata": {
+            "status": "ambiguous",
+            "reason": "Chưa rõ cần tính doanh thu hay số đơn.",
+        },
+    }
+
+    plan = JsonPlanAdapter(
+        lambda _: json.dumps(ambiguous_plan),
+        model_name="local-test",
+    ).create_plan("Câu hỏi mơ hồ", context)
+
+    assert plan.output_type == "unanswerable"
+    assert plan.metadata["status"] == "ambiguous"
+    ambiguous_plan["metadata"]["status"] = "no_data"
+    with pytest.raises(QuestionUnderstandingError, match="metadata.status"):
+        JsonPlanAdapter(
+            lambda _: json.dumps(ambiguous_plan),
+            model_name="local-test",
+        ).create_plan("Câu hỏi mơ hồ", context)

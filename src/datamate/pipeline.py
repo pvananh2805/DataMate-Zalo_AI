@@ -42,7 +42,7 @@ class BusinessSchema:
 @dataclass(frozen=True)
 class PipelineResult:
     answer: ValidatedAnswer
-    execution: ExecutionResult
+    execution: ExecutionResult | None
 
 
 def table_identifier(table: TableRef) -> str:
@@ -204,6 +204,31 @@ def execute_business_plan(
     return PipelineResult(answer=answer, execution=execution)
 
 
+def _abstention_result(plan: QueryPlan) -> PipelineResult:
+    status = plan.metadata.get("status")
+    reason = plan.metadata.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise PipelineError("Abstention plan requires a non-empty reason")
+    if plan.output_type == "abstain":
+        if status != "abstained":
+            raise PipelineError("Abstain plan requires status 'abstained'")
+        answer_status = "abstained"
+    elif plan.output_type == "unanswerable":
+        if status not in {"unanswerable", "ambiguous", "insufficient_data"}:
+            raise PipelineError("Invalid unanswerable plan status")
+        answer_status = status
+    else:
+        raise PipelineError("Plan is not an abstention plan")
+    answer = ValidatedAnswer(
+        answer_type=plan.output_type,
+        value=None,
+        status=answer_status,
+        explanation=reason,
+    )
+    validate_answer(answer)
+    return PipelineResult(answer=answer, execution=None)
+
+
 def execute_and_log_business_plan(
     business_dir: Path | str,
     plan: QueryPlan,
@@ -301,14 +326,17 @@ def execute_question_and_log(
             business_rules=business_rules,
         )
         plan = planner.create_plan(question, context)
-        result = execute_business_plan(
-            business_dir,
-            plan,
-            max_join_rows=max_join_rows,
-            max_groups=max_groups,
-            max_result_rows=max_result_rows,
-            column_coercions=column_coercions,
-        )
+        if plan.output_type in {"unanswerable", "abstain"}:
+            result = _abstention_result(plan)
+        else:
+            result = execute_business_plan(
+                business_dir,
+                plan,
+                max_join_rows=max_join_rows,
+                max_groups=max_groups,
+                max_result_rows=max_result_rows,
+                column_coercions=column_coercions,
+            )
     except (
         DataLoadError,
         PlanValidationError,
@@ -344,7 +372,9 @@ def execute_question_and_log(
             model=planner.model_name,
             elapsed_ms=(time.perf_counter() - started) * 1000,
             plan=plan,
-            execution=result.execution.trace,
+            execution=(
+                result.execution.trace if result.execution is not None else None
+            ),
             answer=result.answer,
             input_metadata=metadata,
         ),

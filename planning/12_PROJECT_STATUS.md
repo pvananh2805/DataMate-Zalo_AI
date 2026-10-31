@@ -18,8 +18,10 @@
 - Đã thêm `scripts/prepare_plan_training.py` và `src/datamate/training_data.py`: nhận nhãn QueryPlan do con người duyệt, kiểm tra theo schema thật, tạo prompt giống inference và chia train/validation theo `business_id` bằng seed cố định. JSONL được đọc/ghi theo luồng, staging bằng SQLite trên đĩa, từ chối output đè dữ liệu hiện có; không suy ra plan từ answer và không đọc public-test. Hiện chưa có bộ annotation plan để tạo training set thực tế.
 - Đã chuẩn bị `scripts/train_query_plans.py`, `src/datamate/training_runner.py`, `requirements-training.txt` và `scripts/merge_lora_adapter.py`: chạy offline trên CUDA, hỗ trợ full fine-tune hoặc LoRA với target modules do người dùng khai báo, từ chối CPU/thiếu CUDA, kiểm tra leakage và tổng parameter sau adapter, lưu checkpoint/log/eval loss và có bước merge/export LoRA. Chưa cài dependency training, chưa chạy vì máy không có GPU/model/annotation; QLoRA không được giả định hỗ trợ.
 - Đã thêm kiểm tra kiểu câu trả lời, finite number/percent, date, boolean, list/table, evidence và các trạng thái no-data/unanswerable/ambiguous/insufficient-data/abstain. Pipeline `execute_business_plan` nối loader → plan validation → executor → answer validation trên fixture SQLite.
+- Nhánh question-to-plan đã có đường abstain/unanswerable rõ ràng: `ambiguous`, `insufficient_data`, `unanswerable` hoặc `abstained` được log với lý do và không giả lập execution/evidence; `no_data` chỉ được gán sau khi executor thực sự chạy và không có dòng khớp.
 - Đã nối logging JSONL cho pipeline: lưu input, model, QueryPlan, trace, evidence, answer, thời gian và lỗi đã nhận diện; có đọc lại/kiểm schema log và chặn ghi trong input root. Chưa có chức năng tái thực thi từ log.
-- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **76 passed** sau khi tích hợp chuẩn hóa, question-to-plan, training-data preparation và kiểm tra split; `compileall` cho `src`, `tests`, `scripts`, CLI trợ giúp chuẩn bị/train/export và `git diff --check` thành công. Lệnh `pytest` từ Python toàn cục không tìm thấy package `datamate`; dùng virtualenv và `PYTHONPATH=src`.
+- Đã thêm `scripts/evaluate_predictions.py` và `src/datamate/evaluation.py`: exact-match chặt theo answer type/value, breakdown theo loại/business, missing/extra/invalid, unanswerable và latency; xử lý Decimal trong list/table từ run log. Report tuyên bố rõ `official_pa_computed=false`, không dùng alias và không tự nhận là PA.
+- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **81 passed** sau khi tích hợp normalization, question-to-plan/abstain, training-data preparation và evaluator cục bộ; `compileall` cho `src`, `tests`, `scripts`, CLI trợ giúp chuẩn bị/train/export/evaluation và `git diff --check` thành công. Lệnh `pytest` từ Python toàn cục không tìm thấy package `datamate`; dùng virtualenv và `PYTHONPATH=src`.
 - Public-test archive vẫn nguyên trạng, chưa giải nén/đọc. Không có dữ liệu training/public-test trong source commit trước đó.
 
 ## Đã triển khai nhưng chưa đủ để dùng trong inference cuộc thi
@@ -38,7 +40,7 @@
 | Query planning/executor hoàn chỉnh | Plan validator và executor hiện có là lõi thử nghiệm; rulebook chưa được thực thi trong executor, chưa hỗ trợ so sánh hai kỳ và chứng cứ đầu ra chưa đủ để tái kiểm chứng mọi phép tính. |
 | Model selection/offline inference | Chưa chọn/tải model; chưa benchmark parameter count, ngày phát hành, license, tiếng Việt, tốc độ/RAM và cấu trúc plan. |
 | Training/fine-tuning | Đã có pipeline annotation thủ công/group split, script offline GPU full/LoRA, validation theo eval loss và merge/export; chưa có annotation thực, model/checkpoint được chọn, dependency GPU, lần chạy training hoặc đánh giá chất lượng sau fine-tune. QLoRA chưa triển khai. |
-| Evaluation | Chưa chạy metric chính thức. Chưa có nguồn evaluator/công thức PA chính thức; không công bố điểm PA. |
+| Evaluation | Đã có evaluator exact-match nội bộ và fixture tests; chưa chạy trên model/validation thực, chưa có nguồn evaluator/công thức PA chính thức và không công bố điểm PA. |
 | Logging/reproducibility | Đã có JSONL log input/plan/trace/evidence/answer/lỗi; chưa có chức năng tái chạy end-to-end từ log, lưu phiên bản dependency và checkpoint. |
 | Docker/submission | Docker CLI chưa có; chưa xác minh Docker guideline, entrypoint, đường dẫn và schema submission. |
 | Tài liệu cuộc thi | Portal xác nhận mô tả cấp cao và `.jsonl`; regulations chỉ trả SPA shell. Giới hạn 15B, ngày phát hành, license, quy tắc offline/dữ liệu, PA và Docker vẫn cần văn bản chính thức để xác minh. |
@@ -54,7 +56,7 @@
 
 1. Tạo/kiểm chứng policy chuẩn hóa theo schema, tập trung CSV/XLSX và định dạng cột bất thường.
 2. Đánh giá backend/model offline đủ điều kiện; triển khai adapter thực tế, xử lý ambiguity/abstain và benchmark trên validation.
-3. Hoàn thiện evidence/answer/output/logging và evaluation trên training validation khi có schema/metric được phép.
+3. Hoàn thiện evidence/answer/output/logging; chạy evaluator exact-match trên validation được phép khi đã có model và labels, chỉ thêm PA sau khi nhận công thức chính thức.
 4. Thu thập/duyệt nhãn QueryPlan hợp lệ, xác minh model đủ điều kiện và chạy training/export trên GPU phù hợp; không huấn luyện lớn trên laptop.
 5. Chỉ chốt model, Docker và submission sau khi xác minh tài liệu chính thức.
 

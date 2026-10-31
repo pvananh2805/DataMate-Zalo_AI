@@ -269,6 +269,54 @@ def test_question_planning_failure_is_recorded_without_a_fake_plan(
     assert "QuestionUnderstandingError" in record["error"]
 
 
+@pytest.mark.parametrize(
+    ("output_type", "status"),
+    [("unanswerable", "ambiguous"), ("abstain", "abstained")],
+)
+def test_question_pipeline_records_explicit_abstention_without_execution(
+    tmp_path: Path,
+    output_type: str,
+    status: str,
+) -> None:
+    input_root = tmp_path / "input"
+    business = _business_database(input_root)
+    table = next(
+        table for table in BusinessDataLoader(business).discover() if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    abstention = {
+        "base_table": table_id,
+        "output_type": output_type,
+        "metadata": {
+            "status": status,
+            "reason": "Chưa rõ người hỏi muốn tổng tiền hay số hóa đơn.",
+        },
+    }
+    log_path = tmp_path / "logs" / "abstention.jsonl"
+
+    result = execute_question_and_log(
+        business,
+        "Tháng này thế nào?",
+        JsonPlanAdapter(
+            lambda _: json.dumps(abstention),
+            model_name="local-stub",
+        ),
+        question_id="q-ambiguous",
+        business_id="biz-test",
+        as_of_date="2026-01-31",
+        log_path=log_path,
+        input_root=input_root,
+    )
+
+    (record,) = read_run_records(log_path)
+    assert result.answer.status == status
+    assert result.answer.answer_type == output_type
+    assert result.execution is None
+    assert record["execution_trace"] is None
+    assert record["answer"]["value"] is None
+    assert record["answer"]["explanation"] == abstention["metadata"]["reason"]
+
+
 def test_pipeline_records_plan_validation_failures(tmp_path: Path) -> None:
     input_root = tmp_path / "input"
     business = _business_database(input_root)

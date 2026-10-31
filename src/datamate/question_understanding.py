@@ -66,7 +66,10 @@ def build_planning_prompt(question: str, context: QuestionContext) -> str:
         "hay mã thực thi. Phép tính phải được mô tả bằng aggregation/calculation; "
         "không tự tính số liệu. Mọi mốc thời gian tương đối phải được quy đổi thành "
         "ngày ISO-8601 dựa trên as_of_date. Nếu không thể lập plan an toàn, không "
-        "đoán tên cột hoặc dữ liệu. Trả về đúng một JSON object, không markdown hay lời "
+        "đoán tên cột hoặc dữ liệu; trả output_type 'unanswerable' hoặc 'abstain', "
+        "chọn một base_table có thật và ghi metadata.status cùng metadata.reason. "
+        "Không tự kết luận no_data khi chưa chạy truy vấn. Trả về đúng một JSON object, "
+        "không markdown hay lời "
         "dẫn. QueryPlan gồm base_table, joins, selected_columns, filters, group_by, "
         "aggregations, calculations, sort, limit, time_range, business_rules, "
         "output_type, evidence_requirements, metadata. Bắt đầu JSON ngay sau dòng "
@@ -104,6 +107,9 @@ class JsonPlanAdapter:
             )
         try:
             plan = query_plan_from_json(raw)
+            if plan.output_type in {"unanswerable", "abstain"}:
+                self._validate_abstention(plan, context)
+                return plan
             validate_query_plan(
                 plan,
                 {table: set(columns) for table, columns in context.schema.items()},
@@ -112,12 +118,51 @@ class JsonPlanAdapter:
                 raise QuestionUnderstandingError(
                     "Generated query plan must declare an output type"
                 )
-            if plan.output_type in {"unanswerable", "abstain"}:
-                raise QuestionUnderstandingError(
-                    "Abstention plans require the explicit abstention pipeline"
-                )
         except (PlanValidationError, QueryPlanFormatError, TypeError) as exc:
             raise QuestionUnderstandingError(
                 f"Generated query plan is invalid: {exc}"
             ) from exc
         return plan
+
+    @staticmethod
+    def _validate_abstention(
+        plan: QueryPlan,
+        context: QuestionContext,
+    ) -> None:
+        if plan.base_table not in context.schema:
+            raise QuestionUnderstandingError(
+                "Abstention plan must reference an available base table"
+            )
+        if any(
+            (
+                plan.joins,
+                plan.selected_columns,
+                plan.filters,
+                plan.group_by,
+                plan.aggregations,
+                plan.calculations,
+                plan.sort,
+                plan.limit is not None,
+                plan.time_range is not None,
+                plan.evidence_requirements,
+            )
+        ):
+            raise QuestionUnderstandingError(
+                "Abstention plans cannot contain executable query operations"
+            )
+        status = plan.metadata.get("status")
+        reason = plan.metadata.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise QuestionUnderstandingError(
+                "Abstention plan must include metadata.reason"
+            )
+        if plan.output_type == "abstain":
+            if status != "abstained":
+                raise QuestionUnderstandingError(
+                    "Abstain plan metadata.status must be 'abstained'"
+                )
+        elif status not in {"unanswerable", "ambiguous", "insufficient_data"}:
+            raise QuestionUnderstandingError(
+                "Unanswerable plan metadata.status must be unanswerable, "
+                "ambiguous, or insufficient_data"
+            )
