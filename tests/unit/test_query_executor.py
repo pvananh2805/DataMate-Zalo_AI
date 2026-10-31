@@ -483,6 +483,7 @@ def test_time_bucket_enforces_group_limit_for_generated_empty_periods() -> None:
         time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
         time_buckets=(TimeBucket(sold_at, "month", "period"),),
         aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("period", "asc"),),
     )
 
     with pytest.raises(QueryExecutionError, match="Group count exceeds configured limit"):
@@ -497,6 +498,38 @@ def test_time_bucket_enforces_group_limit_for_generated_empty_periods() -> None:
             },
             max_groups=2,
         )
+
+
+def test_time_bucket_preserves_null_sum_for_periods_with_only_null_values() -> None:
+    table = "sales"
+    sold_at = ColumnRef(table, "sold_at")
+    amount = ColumnRef(table, "amount")
+    plan = QueryPlan(
+        base_table=table,
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
+        time_buckets=(TimeBucket(sold_at, "month", "period"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        sort=(Sort("period", "asc"),),
+    )
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("sold_at", "amount")},
+        sources={
+            table: [
+                (date(2026, 1, 1), None),
+                (date(2026, 3, 1), Decimal(30)),
+            ]
+        },
+    )
+
+    assert [
+        (row["period"], row["revenue"])
+        for row in result.rows
+    ] == [
+        ("2026-01", None),
+        ("2026-02", Decimal(0)),
+        ("2026-03", Decimal(30)),
+    ]
 
 
 @pytest.mark.parametrize(
