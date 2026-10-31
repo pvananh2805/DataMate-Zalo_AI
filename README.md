@@ -1,5 +1,4 @@
 # DataMate
-fuck vananh
 
 DataMate là một pipeline thử nghiệm để chuyển câu hỏi nghiệp vụ tiếng Việt thành
 `QueryPlan`, đọc dữ liệu doanh nghiệp cục bộ, thực thi truy vấn có kiểm soát và
