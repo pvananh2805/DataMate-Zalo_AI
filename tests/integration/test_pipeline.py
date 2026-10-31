@@ -9,6 +9,8 @@ from datamate.pipeline import (
     table_identifier,
 )
 from datamate.data_loader import BusinessDataLoader
+from datamate.normalization import ColumnCoercion
+from datamate.query_executor import QueryExecutionError
 from datamate.query_plan import (
     Aggregation,
     ColumnRef,
@@ -101,6 +103,45 @@ def test_pipeline_preserves_exact_zero_count_for_no_matching_rows(
     assert result.execution.trace.filtered_rows == 0
 
 
+def test_csv_plan_uses_explicit_locale_normalization_without_guessing(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "csv-business"
+    business.mkdir()
+    (business / "sales.csv").write_text(
+        "amount;note\n1.234,50;first\n2,50;second\n",
+        encoding="utf-8",
+    )
+    table = next(
+        table for table in BusinessDataLoader(business).discover() if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    amount = ColumnRef(table_id, "amount")
+    plan = QueryPlan(
+        base_table=table_id,
+        aggregations=(Aggregation("sum", amount, "total"),),
+        output_type="number",
+    )
+
+    with pytest.raises(QueryExecutionError, match="requires numeric values"):
+        execute_business_plan(business, plan)
+
+    result = execute_business_plan(
+        business,
+        plan,
+        column_coercions={
+            amount: ColumnCoercion(
+                "number",
+                decimal_separator=",",
+                thousands_separator=".",
+            )
+        },
+    )
+
+    assert result.answer.value == 1237
+    assert result.answer.status == "answered"
+
+
 def test_pipeline_logs_success_and_rejects_logs_inside_input_root(tmp_path: Path) -> None:
     input_root = tmp_path / "input"
     business = _business_database(input_root)
@@ -126,6 +167,7 @@ def test_pipeline_logs_success_and_rejects_logs_inside_input_root(tmp_path: Path
         log_path=log_path,
         input_root=input_root,
         input_metadata={"as_of_date": "2026-01-31"},
+        column_coercions={amount: ColumnCoercion("number")},
     )
 
     (record,) = read_run_records(log_path)
@@ -133,6 +175,14 @@ def test_pipeline_logs_success_and_rejects_logs_inside_input_root(tmp_path: Path
     assert record["question_id"] == "q-001"
     assert record["answer"]["value"] == "20"
     assert record["execution_trace"]["result_count"] == 1
+    assert record["input"]["metadata"]["column_coercions"][
+        f"{table_id}.amount"
+    ] == {
+        "kind": "number",
+        "decimal_separator": ".",
+        "thousands_separator": None,
+        "date_format": None,
+    }
     with pytest.raises(RunLogError, match="must not be written under input root"):
         execute_and_log_business_plan(
             business,

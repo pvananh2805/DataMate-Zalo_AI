@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Mapping
 
 from .answer_validation import (
     AnswerValidationError,
@@ -13,6 +14,11 @@ from .answer_validation import (
     validate_answer,
 )
 from .data_loader import BusinessDataLoader, DataLoadError, TableRef
+from .normalization import (
+    ColumnCoercion,
+    ValueNormalizationError,
+    normalize_rows,
+)
 from .query_executor import ExecutionResult, QueryExecutionError, execute_query_plan
 from .query_plan import ColumnRef, PlanValidationError, QueryPlan
 from .run_logging import RunRecord, append_run_record, validate_log_destination
@@ -105,6 +111,7 @@ def execute_business_plan(
     max_join_rows: int = 100_000,
     max_groups: int = 100_000,
     max_result_rows: int = 10_000,
+    column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
 ) -> PipelineResult:
     """Discover the local schema and execute a plan using only approved readers."""
     loader = BusinessDataLoader(business_dir)
@@ -124,11 +131,28 @@ def execute_business_plan(
         for identifier in involved_tables
         if identifier in tables
     }
-    sources = {
-        identifier: loader.iter_rows(tables[identifier])
-        for identifier in involved_tables
-        if identifier in tables
-    }
+    policies_by_table: dict[str, dict[str, ColumnCoercion]] = {}
+    for ref, policy in (column_coercions or {}).items():
+        if ref.table not in tables or ref.column not in tables[ref.table].columns:
+            raise PipelineError(
+                f"Coercion references unknown column {ref.table}.{ref.column}"
+            )
+        if ref.table not in involved_tables:
+            raise PipelineError(
+                f"Coercion references a table outside the plan: {ref.table}"
+            )
+        policies_by_table.setdefault(ref.table, {})[ref.column] = policy
+
+    sources = {}
+    for identifier in involved_tables:
+        if identifier not in tables:
+            continue
+        table = tables[identifier]
+        sources[identifier] = normalize_rows(
+            loader.iter_rows(table),
+            table.columns,
+            policies_by_table.get(identifier, {}),
+        )
     execution = execute_query_plan(
         plan,
         catalog=catalog,
@@ -151,31 +175,26 @@ def execute_business_plan(
         )
     else:
         value = _answer_value(execution, plan.output_type)
-    if value is None and execution.trace.filtered_rows == 0:
+    if value is None:
+        no_rows_matched = execution.trace.filtered_rows == 0
         answer = ValidatedAnswer(
             answer_type="unanswerable",
             value=None,
-            status="no_data",
-            explanation="Không có dòng dữ liệu phù hợp với điều kiện truy vấn.",
+            status="no_data" if no_rows_matched else "insufficient_data",
+            explanation=(
+                "Không có dòng dữ liệu phù hợp với điều kiện truy vấn."
+                if no_rows_matched
+                else "Dữ liệu phù hợp không có giá trị cần thiết để tính."
+            ),
             evidence=_evidence_for(plan, execution),
         )
     else:
-        value = _answer_value(execution, plan.output_type)
-        if value is None:
-            answer = ValidatedAnswer(
-                answer_type="unanswerable",
-                value=None,
-                status="insufficient_data",
-                explanation="Dữ liệu phù hợp không có giá trị cần thiết để tính.",
-                evidence=_evidence_for(plan, execution),
-            )
-        else:
-            answer = ValidatedAnswer(
-                answer_type=plan.output_type,
-                value=value,
-                status="answered",
-                evidence=_evidence_for(plan, execution),
-            )
+        answer = ValidatedAnswer(
+            answer_type=plan.output_type,
+            value=value,
+            status="answered",
+            evidence=_evidence_for(plan, execution),
+        )
     validate_answer(answer)
     return PipelineResult(answer=answer, execution=execution)
 
@@ -191,16 +210,22 @@ def execute_and_log_business_plan(
     log_path: Path | str,
     input_root: Path | str,
     input_metadata: dict[str, object] | None = None,
+    column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
 ) -> PipelineResult:
     """Execute one prepared plan and append success or known failure to JSONL."""
     validate_log_destination(log_path, forbidden_roots=(input_root,))
     started = time.perf_counter()
     try:
-        result = execute_business_plan(business_dir, plan)
+        result = execute_business_plan(
+            business_dir,
+            plan,
+            column_coercions=column_coercions,
+        )
     except (
         DataLoadError,
         PlanValidationError,
         QueryExecutionError,
+        ValueNormalizationError,
         PipelineError,
         AnswerValidationError,
     ) as exc:
@@ -214,7 +239,7 @@ def execute_and_log_business_plan(
                 elapsed_ms=(time.perf_counter() - started) * 1000,
                 plan=plan,
                 error=f"{type(exc).__name__}: {exc}",
-                input_metadata=input_metadata,
+                input_metadata=_log_metadata(input_metadata, column_coercions),
             ),
             forbidden_roots=(input_root,),
         )
@@ -231,8 +256,21 @@ def execute_and_log_business_plan(
             plan=plan,
             execution=result.execution.trace,
             answer=result.answer,
-            input_metadata=input_metadata,
+            input_metadata=_log_metadata(input_metadata, column_coercions),
         ),
         forbidden_roots=(input_root,),
     )
+    return result
+
+
+def _log_metadata(
+    metadata: dict[str, object] | None,
+    column_coercions: Mapping[ColumnRef, ColumnCoercion] | None,
+) -> dict[str, object]:
+    result = dict(metadata or {})
+    if column_coercions:
+        result["column_coercions"] = {
+            f"{ref.table}.{ref.column}": asdict(policy)
+            for ref, policy in column_coercions.items()
+        }
     return result

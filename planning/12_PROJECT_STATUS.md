@@ -1,7 +1,7 @@
 # Trạng thái dự án DataMate
 
 **Cập nhật:** 2026-10-31
-**Mốc nguồn đã xác minh:** `70976ca` (loader ban đầu; đã đẩy lên repository riêng trước đó).
+**Mốc code đã xác minh trước thay đổi hiện tại:** `dda9621` (schema profiling và lõi truy vấn xác định; đã đẩy lên repository riêng).
 
 ## Đã triển khai và kiểm chứng
 
@@ -12,10 +12,11 @@
 - Profile ghi kiểu quan sát, null, nhãn thời gian/tiền/số lượng/trạng thái/định danh, khóa ứng viên và 227 quan hệ gợi ý theo tên cột. Khóa/quan hệ CSV-XLSX đều là heuristic, chưa được xác nhận để join tự động.
 - Đã thống kê đủ 3.000 nhãn đáp án: number 1.884; percent 578; list 193; date 145; string 88; unanswerable 70; boolean 23; table 19. ID câu hỏi/đáp án khớp đầy đủ; không có record JSONL lỗi.
 - Đã thêm QueryPlan có cấu trúc và kiểm tra bảng/cột, join liên thông, filter, aggregation, sort, time range, limit, output type và evidence reference; không nhận SQL hay mã thực thi từ câu hỏi.
-- Đã thêm executor xác định, streaming theo hàng, có join giới hạn bộ nhớ, filter/group, SUM/COUNT/AVG/MIN/MAX, ranking/sort/top-K, tỷ lệ/tăng trưởng, trace và tổng Decimal. Executor yêu cầu đầu vào có kiểu tương thích; hiện chưa có bước tự chuẩn hóa chuỗi CSV tiền/số/ngày thành giá trị typed.
+- Đã thêm executor xác định, streaming theo hàng, có join giới hạn bộ nhớ, filter/group, SUM/COUNT/AVG/MIN/MAX, ranking/sort/top-K, tỷ lệ/tăng trưởng, trace và tổng Decimal.
+- Đã thêm `src/datamate/normalization.py`: chuẩn hóa theo policy tường minh cho number/integer/date/datetime/boolean/text/identifier; không đoán locale/ngày, giữ streaming, từ chối giá trị sai/row-width/header trùng. Pipeline nhận coercion theo `ColumnRef` và ghi policy vào metadata log để tái lập; chưa tự sinh policy từ profile.
 - Đã thêm kiểm tra kiểu câu trả lời, finite number/percent, date, boolean, list/table, evidence và các trạng thái no-data/unanswerable/ambiguous/insufficient-data/abstain. Pipeline `execute_business_plan` nối loader → plan validation → executor → answer validation trên fixture SQLite.
 - Đã nối logging JSONL cho pipeline: lưu input, model, QueryPlan, trace, evidence, answer, thời gian và lỗi đã nhận diện; có đọc lại/kiểm schema log và chặn ghi trong input root. Chưa có chức năng tái thực thi từ log.
-- `pytest -q`: **56 passed** ở lần kiểm tra gần nhất; `compileall` cho `src`, `tests`, `scripts` thành công.
+- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **62 passed** sau khi tích hợp chuẩn hóa; `compileall` cho `src`, `tests` và `git diff --check` thành công. Lệnh `pytest` từ Python toàn cục không tìm thấy package `datamate`; dùng virtualenv và `PYTHONPATH=src`.
 - Public-test archive vẫn nguyên trạng, chưa giải nén/đọc. Không có dữ liệu training/public-test trong source commit trước đó.
 
 ## Đã triển khai nhưng chưa đủ để dùng trong inference cuộc thi
@@ -30,7 +31,7 @@
 | Hạng mục | Trạng thái / việc còn lại |
 |---|---|
 | Question understanding tiếng Việt | Chưa có parser/model inference tích hợp; cần ánh xạ ý định, thực thể, từ đồng nghĩa, thời gian và điều kiện vào QueryPlan. |
-| Chuẩn hóa dữ liệu | Chưa có bộ chuyển đổi có kiểm soát cho chuỗi CSV/XLSX sang Decimal/ngày/boolean; cần phát hiện định dạng mơ hồ và từ chối thay vì đoán. |
+| Chuẩn hóa dữ liệu | Đã có coercion có kiểm soát nhưng chưa có cấu hình policy được xác nhận cho từng bảng/cột training; cần profile-assisted policy authoring, kiểm tra dữ liệu đầy đủ và xử lý header Excel cần review. |
 | Query planning/executor hoàn chỉnh | Plan validator và executor hiện có là lõi thử nghiệm; rulebook chưa được thực thi trong executor, chưa hỗ trợ so sánh hai kỳ và chứng cứ đầu ra chưa đủ để tái kiểm chứng mọi phép tính. |
 | Model selection/offline inference | Chưa chọn/tải model; chưa benchmark parameter count, ngày phát hành, license, tiếng Việt, tốc độ/RAM và cấu trúc plan. |
 | Training/fine-tuning | Chưa có pipeline dữ liệu plan đã gán nhãn, split chống leakage, training/LoRA, validation/export/checkpoint. Máy hiện tại không có GPU NVIDIA; không chạy fine-tuning lớn trên CPU. |
@@ -48,7 +49,7 @@
 
 ## Mốc tiếp theo
 
-1. Hoàn thiện bộ chuẩn hóa giá trị có kiểu và tests trên các CSV/XLSX bất thường.
+1. Tạo/kiểm chứng policy chuẩn hóa theo schema, tập trung CSV/XLSX và định dạng cột bất thường.
 2. Phát triển question-understanding/model adapter độc lập, chỉ xuất QueryPlan đã validate.
 3. Hoàn thiện evidence/answer/output/logging và evaluation trên training validation khi có schema/metric được phép.
 4. Chuẩn bị training/fine-tuning có thể chạy trên GPU khác; không huấn luyện lớn trên laptop.

@@ -1,0 +1,179 @@
+"""Explicit, fail-closed conversion of raw table cells to typed values."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+from typing import Iterable, Literal, Mapping, Sequence
+
+ValueKind = Literal["number", "integer", "date", "datetime", "boolean", "text", "identifier"]
+_NULL_STRINGS = {"", "null", "none", "nan", "n/a", "na", "-"}
+_TRUE_STRINGS = {"true", "yes", "y"}
+_FALSE_STRINGS = {"false", "no", "n"}
+
+
+class ValueNormalizationError(ValueError):
+    """Raised when a source value cannot be converted without guessing."""
+
+
+@dataclass(frozen=True)
+class ColumnCoercion:
+    kind: ValueKind
+    decimal_separator: str = "."
+    thousands_separator: str | None = None
+    date_format: str | None = None
+
+    def __post_init__(self) -> None:
+        if len(self.decimal_separator) != 1:
+            raise ValueError("decimal separator must be one character")
+        if (
+            self.thousands_separator is not None
+            and len(self.thousands_separator) != 1
+        ):
+            raise ValueError("thousands separator must be one character")
+        if self.decimal_separator and self.decimal_separator == self.thousands_separator:
+            raise ValueError("decimal and thousands separators must differ")
+        if self.kind in {"date", "datetime"} and self.thousands_separator is not None:
+            raise ValueError("date coercions do not use a thousands separator")
+
+
+def _decimal(value: object, policy: ColumnCoercion, column: str) -> Decimal:
+    if isinstance(value, bool):
+        raise ValueNormalizationError(f"{column}: boolean is not a numeric value")
+    if isinstance(value, (int, float, Decimal)):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        raise ValueNormalizationError(f"{column}: value is not numeric text")
+
+    if not text or text.casefold() in _NULL_STRINGS:
+        raise ValueNormalizationError(f"{column}: value is empty")
+    if policy.thousands_separator and policy.thousands_separator in text:
+        integer_part, decimal_mark, fractional_part = text.partition(
+            policy.decimal_separator
+        )
+        if decimal_mark and policy.decimal_separator in fractional_part:
+            raise ValueNormalizationError(f"{column}: invalid decimal separators")
+        sign = ""
+        if integer_part[:1] in {"+", "-"}:
+            sign, integer_part = integer_part[0], integer_part[1:]
+        groups = integer_part.split(policy.thousands_separator)
+        if (
+            not 1 <= len(groups[0]) <= 3
+            or not groups[0].isdigit()
+            or any(len(group) != 3 or not group.isdigit() for group in groups[1:])
+        ):
+            raise ValueNormalizationError(f"{column}: invalid thousands grouping")
+        text = sign + "".join(groups)
+        if decimal_mark:
+            text += policy.decimal_separator + fractional_part
+
+    if policy.decimal_separator != ".":
+        if text.count(policy.decimal_separator) > 1:
+            raise ValueNormalizationError(f"{column}: invalid decimal separators")
+        text = text.replace(policy.decimal_separator, ".")
+    try:
+        number = Decimal(text)
+    except InvalidOperation as exc:
+        raise ValueNormalizationError(f"{column}: invalid numeric value") from exc
+    if not number.is_finite():
+        raise ValueNormalizationError(f"{column}: numeric value must be finite")
+    return number
+
+
+def normalize_value(
+    value: object, policy: ColumnCoercion, *, column: str
+) -> object:
+    """Convert one cell according to an explicit policy; never infer locale."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().casefold() in _NULL_STRINGS:
+        return None
+
+    if policy.kind == "number":
+        return _decimal(value, policy, column)
+    if policy.kind == "integer":
+        number = _decimal(value, policy, column)
+        if number != number.to_integral_value():
+            raise ValueNormalizationError(f"{column}: value is not an integer")
+        return int(number)
+    if policy.kind == "date":
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if not isinstance(value, str):
+            raise ValueNormalizationError(f"{column}: value is not a date")
+        try:
+            return (
+                datetime.strptime(value.strip(), policy.date_format).date()
+                if policy.date_format
+                else date.fromisoformat(value.strip())
+            )
+        except ValueError as exc:
+            raise ValueNormalizationError(
+                f"{column}: date does not match the declared format"
+            ) from exc
+    if policy.kind == "datetime":
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return (
+                    datetime.strptime(value.strip(), policy.date_format)
+                    if policy.date_format
+                    else datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+                )
+            except ValueError as exc:
+                raise ValueNormalizationError(
+                    f"{column}: datetime does not match the declared format"
+                ) from exc
+        raise ValueNormalizationError(f"{column}: value is not a datetime")
+    if policy.kind == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            if normalized in _TRUE_STRINGS:
+                return True
+            if normalized in _FALSE_STRINGS:
+                return False
+        raise ValueNormalizationError(f"{column}: boolean token is not recognized")
+    if policy.kind in {"text", "identifier"}:
+        return value if isinstance(value, str) else str(value)
+    raise ValueNormalizationError(f"{column}: unsupported conversion policy")
+
+
+def normalize_rows(
+    rows: Iterable[Sequence[object]],
+    columns: Sequence[str],
+    policies: Mapping[str, ColumnCoercion],
+) -> Iterable[tuple[object, ...]]:
+    """Normalize each row lazily, preserving bounded-memory streaming."""
+    if len(set(columns)) != len(columns):
+        raise ValueNormalizationError("Duplicate column names cannot be normalized safely")
+    indexes = {column: index for index, column in enumerate(columns)}
+    unknown_columns = set(policies) - indexes.keys()
+    if unknown_columns:
+        raise ValueNormalizationError(
+            f"Coercion references unknown columns: {', '.join(sorted(unknown_columns))}"
+        )
+    for row_number, raw_row in enumerate(rows, start=1):
+        row = tuple(raw_row)
+        if len(row) != len(columns):
+            raise ValueNormalizationError(
+                f"Row width mismatch at row {row_number}: expected {len(columns)}, got {len(row)}"
+            )
+        values = list(row)
+        for column, policy in policies.items():
+            try:
+                values[indexes[column]] = normalize_value(
+                    values[indexes[column]], policy, column=column
+                )
+            except ValueNormalizationError as exc:
+                raise ValueNormalizationError(
+                    f"Row {row_number}: {exc}"
+                ) from exc
+        yield tuple(values)
