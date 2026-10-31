@@ -292,3 +292,63 @@ def test_submission_jsonl_requires_columns_and_rows_for_table(
     assert report["exact_matches"] == 0
     assert report["invalid_predictions"] == 1
     assert report["strict_local_reward_sum"] == -1
+
+
+def test_string_alias_and_case_whitespace_punctuation_are_accepted(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "string",
+                "answer": "Sữa",
+                "alias": ["Sữa tươi"],
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [{"id": "q1", "type": "string", "answer": "  SỮA-TƯƠI! "}],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+    assert report["aliases_compared_for_strings"] is True
+    assert report["string_alias_count"] == 1
+
+
+def test_string_normalization_does_not_remove_vietnamese_diacritics(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [{"id": "q1", "type": "string", "answer": "Cà phê"}],
+    )
+    _write_jsonl(
+        prediction_path,
+        [{"id": "q1", "type": "string", "answer": "Ca phe"}],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 0
+    assert report["incorrect_predictions"] == 1

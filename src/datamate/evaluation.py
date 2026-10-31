@@ -6,6 +6,7 @@ import json
 import math
 import sqlite3
 import tempfile
+import unicodedata
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -143,6 +144,16 @@ def _required_id(record: dict[str, object], key: str, context: str) -> str:
     return value
 
 
+def _normalize_string(value: str) -> str:
+    normalized = unicodedata.normalize("NFC", value).casefold()
+    return "".join(
+        character
+        for character in normalized
+        if not character.isspace()
+        and not unicodedata.category(character).startswith("P")
+    )
+
+
 def _is_submission_table(value: object) -> bool:
     if not isinstance(value, dict) or set(value) != {"columns", "rows"}:
         return False
@@ -182,18 +193,33 @@ def _load_questions(
                 ) from exc
 
 
-def _load_gold(connection: sqlite3.Connection, source: Path) -> int:
+def _load_gold(connection: sqlite3.Connection, source: Path) -> tuple[int, int, int]:
     count = 0
+    string_alias_count = 0
+    string_alias_questions = 0
     with source.open("r", encoding="utf-8-sig") as stream:
         for line_number, record in _jsonl_records(stream, source):
             context = f"{source}:{line_number}"
             question_id = _required_id(record, "id", context)
             answer_type = record.get("type")
             answer_value = _canonical_value(answer_type, record.get("answer"))
+            aliases = record.get("alias", [])
+            if not isinstance(aliases, list):
+                raise EvaluationError(f"{context}: alias must be an array")
+            if answer_type == "string":
+                if any(not isinstance(alias, str) for alias in aliases):
+                    raise EvaluationError(
+                        f"{context}: string answer aliases must be strings"
+                    )
+                string_alias_count += len(aliases)
+                string_alias_questions += bool(aliases)
+                answer_aliases = json.dumps(aliases, ensure_ascii=False)
+            else:
+                answer_aliases = "[]"
             try:
                 connection.execute(
-                    "INSERT INTO gold VALUES (?, ?, ?)",
-                    (question_id, answer_type, answer_value),
+                    "INSERT INTO gold VALUES (?, ?, ?, ?)",
+                    (question_id, answer_type, answer_value, answer_aliases),
                 )
             except sqlite3.IntegrityError as exc:
                 raise EvaluationError(
@@ -202,7 +228,7 @@ def _load_gold(connection: sqlite3.Connection, source: Path) -> int:
             count += 1
     if count == 0:
         raise EvaluationError("Gold answer file is empty")
-    return count
+    return count, string_alias_count, string_alias_questions
 
 
 def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
@@ -327,7 +353,8 @@ def evaluate_predictions(
         try:
             connection.execute(
                 "CREATE TABLE gold (question_id TEXT PRIMARY KEY, "
-                "answer_type TEXT NOT NULL, answer_value TEXT NOT NULL)"
+                "answer_type TEXT NOT NULL, answer_value TEXT NOT NULL, "
+                "answer_aliases TEXT NOT NULL)"
             )
             connection.execute(
                 "CREATE TABLE predictions (question_id TEXT PRIMARY KEY, "
@@ -341,12 +368,18 @@ def evaluate_predictions(
             )
             if questions is not None:
                 _load_questions(connection, questions)
-            gold_count = _load_gold(connection, answers)
+            (
+                gold_count,
+                string_alias_count,
+                string_alias_questions,
+            ) = _load_gold(connection, answers)
             prediction_count = _load_predictions(connection, predictions)
             connection.commit()
             report = _aggregate_report(
                 connection,
                 gold_count=gold_count,
+                string_alias_count=string_alias_count,
+                string_alias_questions=string_alias_questions,
                 prediction_count=prediction_count,
             )
         finally:
@@ -370,6 +403,8 @@ def _aggregate_report(
     connection: sqlite3.Connection,
     *,
     gold_count: int,
+    string_alias_count: int,
+    string_alias_questions: int,
     prediction_count: int,
 ) -> dict[str, object]:
     exact_matches = 0
@@ -388,6 +423,7 @@ def _aggregate_report(
     by_business: dict[str, dict[str, int]] = {}
     query = """
         SELECT g.question_id, p.question_id, g.answer_type, g.answer_value,
+               g.answer_aliases,
                p.answer_type, p.answer_value, p.business_id, p.elapsed_ms,
                p.valid, p.allow_numeric_strings, q.business_id
         FROM gold AS g
@@ -400,6 +436,7 @@ def _aggregate_report(
         predicted_question_id,
         gold_type,
         gold_value,
+        gold_aliases,
         predicted_type,
         predicted_value,
         predicted_business,
@@ -429,6 +466,7 @@ def _aggregate_report(
             gold_value,
             predicted_value,
             allow_numeric_strings=bool(allow_numeric_strings),
+            gold_aliases=gold_aliases,
         )
         if type_matches_this:
             type_matches += 1
@@ -468,7 +506,9 @@ def _aggregate_report(
     return {
         "metric": "local_strict_exact_match_not_official_PA",
         "official_pa_computed": False,
-        "aliases_compared": False,
+        "aliases_compared_for_strings": True,
+        "string_alias_count": string_alias_count,
+        "string_alias_questions": string_alias_questions,
         "gold_count": gold_count,
         "prediction_count": prediction_count,
         "exact_matches": exact_matches,
@@ -477,9 +517,9 @@ def _aggregate_report(
         "abstentions": abstentions,
         "strict_local_reward_sum": exact_matches - incorrect_predictions,
         "strict_local_reward_scope": (
-            "Applies +1/-1/0 to strict local exact-match outcomes. The training "
-            "rulebook has additional string/alias and list/table comparison "
-            "rules; this is not the official reward or aggregate PA."
+            "Applies +1/-1/0 to local outcomes with provided string aliases and "
+            "case/whitespace/punctuation normalization. List/table comparison "
+            "rules are incomplete; this is not the official reward or aggregate PA."
         ),
         "answer_type_matches": type_matches,
         "answer_type_accuracy": type_matches / gold_count if gold_count else 0.0,
@@ -505,7 +545,22 @@ def _same_answer_value(
     predicted_value: str,
     *,
     allow_numeric_strings: bool,
+    gold_aliases: str,
 ) -> bool:
+    if answer_type == "string":
+        try:
+            gold = json.loads(gold_value)
+            predicted = json.loads(predicted_value)
+            aliases = json.loads(gold_aliases)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(gold, str) or not isinstance(predicted, str):
+            return False
+        return _normalize_string(predicted) in {
+            _normalize_string(value)
+            for value in [gold, *aliases]
+            if isinstance(value, str)
+        }
     if answer_type not in {"list", "table"}:
         return gold_value == predicted_value
     try:
