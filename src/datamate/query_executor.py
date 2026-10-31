@@ -41,6 +41,7 @@ class ExecutionTrace:
 class ExecutionResult:
     rows: tuple[dict[str, object], ...]
     trace: ExecutionTrace
+    time_coverage: Mapping[str, tuple[date | None, date | None]]
 
 
 @dataclass
@@ -431,6 +432,33 @@ def execute_query_plan(
     joined_tables = {plan.base_table}
     join_indexes: dict[str, dict[object, list[Row]]] = {}
     source_row_counts: dict[str, int] = {}
+    time_columns: dict[str, set[str]] = defaultdict(set)
+    if plan.time_range is not None:
+        time_columns[plan.time_range.column.table].add(plan.time_range.column.column)
+    for bucket in plan.time_buckets:
+        time_columns[bucket.column.table].add(bucket.column.column)
+    for aggregation in plan.aggregations:
+        if aggregation.time_range is not None:
+            time_columns[aggregation.time_range.column.table].add(
+                aggregation.time_range.column.column
+            )
+    time_coverage: dict[str, list[date | None]] = {
+        f"{table}.{column}": [None, None]
+        for table, columns in time_columns.items()
+        for column in columns
+    }
+
+    def record_time_coverage(table: str, row: Row) -> None:
+        for column in time_columns.get(table, ()):
+            day = _source_day(row[column_indexes[table][column]])
+            if day is None:
+                continue
+            coverage = time_coverage[f"{table}.{column}"]
+            if coverage[0] is None or day < coverage[0]:
+                coverage[0] = day
+            if coverage[1] is None or day > coverage[1]:
+                coverage[1] = day
+
     for join in plan.joins:
         new_table = (
             join.right.table
@@ -453,6 +481,7 @@ def execute_query_plan(
                 raise QueryExecutionError(
                     f"Row width mismatch in {new_table} at row {row_count}"
                 )
+            record_time_coverage(new_table, row)
             key = row[key_index]
             if key is not None:
                 try:
@@ -480,6 +509,7 @@ def execute_query_plan(
                 raise QueryExecutionError(
                     f"Row width mismatch in {plan.base_table} at row {base_row_count}"
                 )
+            record_time_coverage(plan.base_table, row)
             current: list[dict[str, Row | None]] = [{plan.base_table: row}]
             for join in plan.joins:
                 new_table = (
@@ -583,4 +613,8 @@ def execute_query_plan(
             group_count=group_count,
             result_count=len(rows),
         ),
+        time_coverage={
+            column: (bounds[0], bounds[1])
+            for column, bounds in time_coverage.items()
+        },
     )

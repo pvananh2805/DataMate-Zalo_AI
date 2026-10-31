@@ -10,10 +10,11 @@
 - Đã sửa lọc khoảng ngày trong `src/datamate/query_executor.py`: hỗ trợ giá trị `date`, `datetime` và chuỗi ISO; tính đúng trọn ngày kết thúc khi inclusive; từ chối giá trị ngày không hợp lệ thay vì so sánh từ vựng.
 - QueryPlan/executor hỗ trợ filter và time range riêng trên từng aggregation để so sánh hai kỳ từ cùng bảng; đã kiểm thử so sánh theo nhóm qua pipeline, serialization và evidence.
 - Đã thêm `TimeBucket` theo ngày/tuần/tháng/quý/năm (tuần bắt đầu thứ Hai), cho phép sắp xếp theo bucket; list series một aggregation xuất các số liệu theo thứ tự kỳ, table giữ cột kỳ rồi các chỉ tiêu. Integration test đi qua SQLite → executor → answer validation → JSONL serializer; evaluator xử lý header bảng time-bucket rỗng.
+- Executor ghi nhận độ phủ ngày của cột temporal khi đọc streaming; pipeline trả `unanswerable/no_data` khi mọi kỳ hỏi hoàn toàn ngoài độ phủ, tính một phần nếu kỳ chỉ chồng lấn vùng dữ liệu, và trả SUM=0 cho kỳ có độ phủ nhưng không có dòng thỏa điều kiện. Các nhánh này có integration tests.
 - `ratio_percent` và `percent_change` được làm tròn đúng 2 chữ số thập phân theo `ROUND_HALF_UP`, như rulebook training yêu cầu.
 - Test hồi quy cover date/datetime, timestamp cuối ngày, cận kết thúc độc quyền, lỗi định dạng ngày, giảm phần trăm âm và tie-break top-K, so sánh hai kỳ, time bucket calendar, list/table output, cũng như bảng rỗng.
-- Kiểm chứng sau thay đổi: toàn bộ suite **137 passed**; `compileall` và `git diff --check` thành công. Không mở public test hoặc fine-tune.
-- Các khoảng trống ưu tiên tiếp: bucket trống và kỳ ngoài vùng dữ liệu, thực thi business rules có test, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
+- Kiểm chứng sau thay đổi: toàn bộ suite **138 passed**; `compileall` và `git diff --check` thành công. Không mở public test hoặc fine-tune.
+- Các khoảng trống ưu tiên tiếp: bucket tháng trống, thực thi business rules có test, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
 
 ## Đã triển khai và kiểm chứng
 

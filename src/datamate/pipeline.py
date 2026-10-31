@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Mapping
 
@@ -25,7 +27,7 @@ from .question_understanding import (
     QuestionUnderstandingError,
 )
 from .query_executor import ExecutionResult, QueryExecutionError, execute_query_plan
-from .query_plan import ColumnRef, PlanValidationError, QueryPlan
+from .query_plan import ColumnRef, PlanValidationError, QueryPlan, TimeRange
 from .run_logging import RunRecord, append_run_record, validate_log_destination
 
 
@@ -100,6 +102,20 @@ def _answer_value(
             f"{answer_type} output requires exactly one scalar result"
         )
     return next(iter(result.rows[0].values()))
+
+
+def _range_outside_coverage(
+    time_range: TimeRange,
+    execution: ExecutionResult,
+) -> bool:
+    column = time_range.column
+    key = f"{column.table}.{column.column}"
+    bounds = execution.time_coverage.get(key)
+    if bounds is None or bounds[0] is None or bounds[1] is None:
+        return True
+    start = date.fromisoformat(time_range.start)
+    end = date.fromisoformat(time_range.end)
+    return end < bounds[0] or start > bounds[1]
 
 
 def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence, ...]:
@@ -212,21 +228,47 @@ def execute_business_plan(
         max_result_rows=max_result_rows,
     )
 
-    if execution.trace.filtered_rows == 0:
+    requested_ranges = [
+        aggregation.time_range
+        for aggregation in plan.aggregations
+        if aggregation.time_range is not None
+    ]
+    if plan.time_range is not None:
+        requested_ranges.append(plan.time_range)
+    outside_coverage = bool(requested_ranges) and all(
+        _range_outside_coverage(time_range, execution)
+        for time_range in requested_ranges
+    )
+
+    if outside_coverage:
+        value = None
+    elif execution.trace.filtered_rows == 0:
         has_scalar_count = (
             plan.output_type == "number"
             and not plan.group_by
+            and not plan.time_buckets
+            and not plan.calculations
             and any(item.function == "count" for item in plan.aggregations)
         )
-        value = (
-            _answer_value(execution, plan.output_type, plan)
-            if has_scalar_count or plan.output_type in {"list", "table"}
-            else None
+        has_scoped_sum = (
+            plan.output_type == "number"
+            and not plan.group_by
+            and not plan.time_buckets
+            and not plan.calculations
+            and len(plan.aggregations) == 1
+            and plan.aggregations[0].function == "sum"
+            and bool(requested_ranges)
         )
+        if has_scoped_sum:
+            value = Decimal(0)
+        elif has_scalar_count or plan.output_type in {"list", "table"}:
+            value = _answer_value(execution, plan.output_type, plan)
+        else:
+            value = None
     else:
         value = _answer_value(execution, plan.output_type, plan)
     if value is None:
-        no_rows_matched = execution.trace.filtered_rows == 0
+        no_rows_matched = outside_coverage or execution.trace.filtered_rows == 0
         answer = ValidatedAnswer(
             answer_type="unanswerable",
             value=None,

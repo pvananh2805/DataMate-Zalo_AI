@@ -222,6 +222,59 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
     }
 
 
+def test_pipeline_distinguishes_out_of_coverage_from_zero_within_coverage(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "coverage-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE sales (amount NUMERIC, sold_at TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?)",
+            [(10, "2026-01-01"), (25, "2026-01-31T23:59:00")],
+        )
+    table = next(
+        table for table in BusinessDataLoader(business).discover() if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    amount = ColumnRef(table_id, "amount")
+    sold_at = ColumnRef(table_id, "sold_at")
+
+    outside_plan = QueryPlan(
+        base_table=table_id,
+        time_range=TimeRange(sold_at, "2026-03-01", "2026-03-31"),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        output_type="number",
+    )
+    outside = execute_business_plan(business, outside_plan)
+    assert outside.answer.answer_type == "unanswerable"
+    assert outside.answer.status == "no_data"
+
+    covered_zero_plan = QueryPlan(
+        base_table=table_id,
+        filters=(Filter(amount, "gt", 1000),),
+        time_range=TimeRange(sold_at, "2026-01-10", "2026-01-15"),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        output_type="number",
+    )
+    covered_zero = execute_business_plan(business, covered_zero_plan)
+    assert covered_zero.answer.answer_type == "number"
+    assert covered_zero.answer.value == 0
+    assert covered_zero.answer.status == "answered"
+
+    partial_plan = QueryPlan(
+        base_table=table_id,
+        time_range=TimeRange(sold_at, "2025-12-01", "2026-01-31"),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+        output_type="number",
+    )
+    partial = execute_business_plan(business, partial_plan)
+    assert partial.answer.answer_type == "number"
+    assert partial.answer.value == 35
+
+
 def test_pipeline_distinguishes_no_matching_data_from_internal_failure(
     tmp_path: Path,
 ) -> None:
