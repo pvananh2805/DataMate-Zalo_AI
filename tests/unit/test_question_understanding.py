@@ -84,6 +84,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "2026-05-25" in prompt
     assert "sold_at" in prompt
     assert "Hủy đơn không tính doanh thu." in prompt
+    assert "business_rules hiện chưa có executor" in prompt
 
 
 def test_json_plan_adapter_validates_against_discovered_schema() -> None:
@@ -125,6 +126,19 @@ def test_json_plan_adapter_rejects_hallucinated_columns_and_non_json() -> None:
             lambda _: "```json\n{}\n```",
             model_name="local-test",
         ).create_plan("Tổng?", context)
+
+
+def test_json_plan_adapter_rejects_unexecutable_business_rule_tags() -> None:
+    tagged_plan = {
+        **PLAN,
+        "business_rules": ["exclude cancelled orders"],
+    }
+
+    with pytest.raises(QuestionUnderstandingError, match="business_rules are not executable"):
+        JsonPlanAdapter(
+            lambda _: json.dumps(tagged_plan),
+            model_name="local-test",
+        ).create_plan("Tổng doanh thu?", QuestionContext(schema={TABLE: ("amount",)}))
 
 
 def test_json_plan_adapter_accepts_only_explicit_non_answer_statuses() -> None:

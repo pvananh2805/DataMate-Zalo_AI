@@ -168,6 +168,11 @@ def validate_query_plan(
     issues: list[str] = []
     if max_limit < 1:
         raise ValueError("max_limit must be positive")
+    if plan.business_rules:
+        issues.append(
+            "business_rules are not executable; encode supported logic as validated "
+            "filters/calculations or abstain"
+        )
 
     included_tables = {plan.base_table}
     for join in plan.joins:

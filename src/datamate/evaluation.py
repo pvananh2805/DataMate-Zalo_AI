@@ -60,11 +60,18 @@ def _jsonl_records(stream: TextIO, source: Path):
         yield line_number, record
 
 
-def _canonical_value(answer_type: object, value: object) -> str:
+def _canonical_value(
+    answer_type: object,
+    value: object,
+    *,
+    allow_numeric_string: bool = False,
+) -> str:
     if not isinstance(answer_type, str):
         raise EvaluationError("answer type must be a string")
     if answer_type in {"number", "percent"}:
-        if isinstance(value, bool) or value is None:
+        if isinstance(value, bool) or value is None or (
+            isinstance(value, str) and not allow_numeric_string
+        ):
             raise EvaluationError(f"{answer_type} answer must be numeric")
         try:
             number = Decimal(str(value))
@@ -77,6 +84,22 @@ def _canonical_value(answer_type: object, value: object) -> str:
         if not isinstance(value, str):
             raise EvaluationError("date answer must be an ISO-8601 string")
         try:
+            if len(value) == 7:
+                if (
+                    value[4] != "-"
+                    or not value[:4].isdigit()
+                    or not value[5:].isdigit()
+                ):
+                    raise ValueError
+                year, month = (int(part) for part in value.split("-"))
+                date(year, month, 1)
+                return value
+            if (
+                len(value) != 10
+                or value[4] != "-"
+                or value[7] != "-"
+            ):
+                raise ValueError
             return date.fromisoformat(value).isoformat()
         except ValueError as exc:
             raise EvaluationError("date answer must be an ISO-8601 string") from exc
@@ -89,7 +112,7 @@ def _canonical_value(answer_type: object, value: object) -> str:
             raise EvaluationError("boolean answer must be true or false")
     elif answer_type == "unanswerable":
         if value is not None:
-            raise EvaluationError("unanswerable answer must be null")
+            raise EvaluationError("unanswerable gold answer must be null")
     elif answer_type == "table":
         if not isinstance(value, (dict, list)):
             raise EvaluationError("table answer must be an object or array")
@@ -118,6 +141,25 @@ def _required_id(record: dict[str, object], key: str, context: str) -> str:
     if not isinstance(value, str) or not value:
         raise EvaluationError(f"{context}: {key} must be a non-empty string")
     return value
+
+
+def _is_submission_table(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"columns", "rows"}:
+        return False
+    columns = value["columns"]
+    rows = value["rows"]
+    return (
+        isinstance(columns, list)
+        and all(isinstance(column, str) for column in columns)
+        and len(set(columns)) == len(columns)
+        and isinstance(rows, list)
+        and all(
+            isinstance(row, list)
+            and len(row) == len(columns)
+            and _validate_nested_value(row)
+            for row in rows
+        )
+    )
 
 
 def _load_questions(
@@ -174,22 +216,52 @@ def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
                 context,
             )
             nested = record.get("answer")
-            answer_record = nested if isinstance(nested, dict) else {}
+            internal_log = isinstance(nested, dict) and (
+                "answer_type" in nested or "status" in nested
+            )
+            answer_record = nested if internal_log else {}
             answer_type = (
                 record.get("type")
                 or answer_record.get("answer_type")
                 or record.get("answer_type")
             )
-            if isinstance(nested, dict) and "value" in nested:
-                value = nested["value"]
+            if internal_log:
+                value = nested.get("value")
             else:
                 value = nested
             valid = 1
-            try:
-                canonical = _canonical_value(answer_type, value)
-            except EvaluationError:
+            if answer_type == "abstain":
+                canonical = "null"
+                if not internal_log and "answer" in record:
+                    valid = 0
+            elif answer_type == "unanswerable" and not internal_log:
+                if (
+                    isinstance(value, dict)
+                    and value.get("type") == "unanswerable"
+                    and isinstance(value.get("reason"), str)
+                    and set(value) == {"type", "reason"}
+                ):
+                    canonical = "null"
+                else:
+                    canonical = "null"
+                    valid = 0
+            elif (
+                answer_type == "table"
+                and not internal_log
+                and not _is_submission_table(value)
+            ):
                 canonical = "null"
                 valid = 0
+            else:
+                try:
+                    canonical = _canonical_value(
+                        answer_type,
+                        value,
+                        allow_numeric_string=internal_log,
+                    )
+                except EvaluationError:
+                    canonical = "null"
+                    valid = 0
             status = answer_record.get("status", record.get("status"))
             business_id = record.get("business_id")
             if not isinstance(business_id, str):
@@ -204,7 +276,7 @@ def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
                 elapsed_ms = None
             try:
                 connection.execute(
-                    "INSERT INTO predictions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO predictions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         question_id,
                         answer_type if isinstance(answer_type, str) else None,
@@ -213,6 +285,7 @@ def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
                         business_id,
                         elapsed_ms,
                         valid,
+                        int(internal_log),
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -259,7 +332,8 @@ def evaluate_predictions(
             connection.execute(
                 "CREATE TABLE predictions (question_id TEXT PRIMARY KEY, "
                 "answer_type TEXT, answer_value TEXT NOT NULL, status TEXT, "
-                "business_id TEXT, elapsed_ms REAL, valid INTEGER NOT NULL)"
+                "business_id TEXT, elapsed_ms REAL, valid INTEGER NOT NULL, "
+                "allow_numeric_strings INTEGER NOT NULL)"
             )
             connection.execute(
                 "CREATE TABLE question_business ("
@@ -305,15 +379,17 @@ def _aggregate_report(
     business_mismatches = 0
     unanswerable_total = 0
     unanswerable_correct = 0
+    abstentions = 0
+    incorrect_predictions = 0
     latency_total = 0.0
     latency_count = 0
     max_latency = 0.0
     by_type: dict[str, dict[str, int]] = {}
     by_business: dict[str, dict[str, int]] = {}
     query = """
-        SELECT g.question_id, g.answer_type, g.answer_value,
+        SELECT g.question_id, p.question_id, g.answer_type, g.answer_value,
                p.answer_type, p.answer_value, p.business_id, p.elapsed_ms,
-               p.valid, q.business_id
+               p.valid, p.allow_numeric_strings, q.business_id
         FROM gold AS g
         LEFT JOIN predictions AS p ON p.question_id = g.question_id
         LEFT JOIN question_business AS q ON q.question_id = g.question_id
@@ -321,6 +397,7 @@ def _aggregate_report(
     """
     for (
         question_id,
+        predicted_question_id,
         gold_type,
         gold_value,
         predicted_type,
@@ -328,6 +405,7 @@ def _aggregate_report(
         predicted_business,
         elapsed_ms,
         valid,
+        allow_numeric_strings,
         gold_business,
     ) in connection.execute(query):
         type_bucket = by_type.setdefault(
@@ -350,6 +428,7 @@ def _aggregate_report(
             gold_type,
             gold_value,
             predicted_value,
+            allow_numeric_strings=bool(allow_numeric_strings),
         )
         if type_matches_this:
             type_matches += 1
@@ -358,6 +437,14 @@ def _aggregate_report(
             exact_matches += 1
             type_bucket["exact_match"] += 1
             business_bucket["exact_match"] += 1
+        is_abstention = (
+            predicted_question_id is None
+            or (predicted_type == "abstain" and valid == 1)
+        )
+        if is_abstention:
+            abstentions += 1
+        elif not exact_this:
+            incorrect_predictions += 1
         if gold_type == "unanswerable":
             unanswerable_total += 1
             if exact_this:
@@ -386,6 +473,14 @@ def _aggregate_report(
         "prediction_count": prediction_count,
         "exact_matches": exact_matches,
         "exact_match_fraction": exact_matches / gold_count if gold_count else 0.0,
+        "incorrect_predictions": incorrect_predictions,
+        "abstentions": abstentions,
+        "strict_local_reward_sum": exact_matches - incorrect_predictions,
+        "strict_local_reward_scope": (
+            "Applies +1/-1/0 to strict local exact-match outcomes. The training "
+            "rulebook has additional string/alias and list/table comparison "
+            "rules; this is not the official reward or aggregate PA."
+        ),
         "answer_type_matches": type_matches,
         "answer_type_accuracy": type_matches / gold_count if gold_count else 0.0,
         "missing_predictions": missing_predictions,
@@ -408,6 +503,8 @@ def _same_answer_value(
     answer_type: str,
     gold_value: str,
     predicted_value: str,
+    *,
+    allow_numeric_strings: bool,
 ) -> bool:
     if answer_type not in {"list", "table"}:
         return gold_value == predicted_value
@@ -416,14 +513,25 @@ def _same_answer_value(
         predicted = json.loads(predicted_value)
     except json.JSONDecodeError:
         return False
-    return _structured_equal(gold, predicted)
+    return _structured_equal(
+        gold,
+        predicted,
+        allow_numeric_strings=allow_numeric_strings,
+    )
 
 
-def _structured_equal(gold: object, predicted: object) -> bool:
+def _structured_equal(
+    gold: object,
+    predicted: object,
+    *,
+    allow_numeric_strings: bool,
+) -> bool:
     if isinstance(gold, bool):
         return isinstance(predicted, bool) and gold == predicted
     if isinstance(gold, (int, float)):
-        if isinstance(predicted, bool):
+        if isinstance(predicted, bool) or (
+            isinstance(predicted, str) and not allow_numeric_strings
+        ):
             return False
         try:
             expected_number = Decimal(str(gold))
@@ -443,12 +551,26 @@ def _structured_equal(gold: object, predicted: object) -> bool:
         return (
             isinstance(predicted, list)
             and len(gold) == len(predicted)
-            and all(_structured_equal(left, right) for left, right in zip(gold, predicted))
+            and all(
+                _structured_equal(
+                    left,
+                    right,
+                    allow_numeric_strings=allow_numeric_strings,
+                )
+                for left, right in zip(gold, predicted)
+            )
         )
     if isinstance(gold, dict):
         return (
             isinstance(predicted, dict)
             and gold.keys() == predicted.keys()
-            and all(_structured_equal(gold[key], predicted[key]) for key in gold)
+            and all(
+                _structured_equal(
+                    gold[key],
+                    predicted[key],
+                    allow_numeric_strings=allow_numeric_strings,
+                )
+                for key in gold
+            )
         )
     return False

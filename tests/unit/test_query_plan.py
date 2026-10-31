@@ -106,6 +106,18 @@ def test_join_must_be_connected_to_base_table() -> None:
         validate_query_plan(plan, CATALOG)
 
 
+def test_plan_rejects_business_rules_that_executor_cannot_apply() -> None:
+    table = "orders.csv::orders"
+    plan = QueryPlan(
+        base_table=table,
+        selected_columns=(ColumnRef(table, "order_id"),),
+        business_rules=("Hủy đơn không tính doanh thu.",),
+    )
+
+    with pytest.raises(PlanValidationError, match="business_rules are not executable"):
+        validate_query_plan(plan, CATALOG)
+
+
 def test_plan_rejects_unsafe_literals_non_iso_dates_and_boolean_limits() -> None:
     orders = "orders.csv::orders"
     plan = QueryPlan(
