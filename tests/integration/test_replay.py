@@ -11,7 +11,7 @@ from datamate.pipeline import (
     execute_question_and_log,
     table_identifier,
 )
-from datamate.query_plan import Aggregation, ColumnRef, QueryPlan
+from datamate.query_plan import Aggregation, ColumnRef, GroupFilter, QueryPlan
 from datamate.replay import ReplayError, replay_run_record
 from datamate.question_understanding import JsonPlanAdapter
 
@@ -62,6 +62,53 @@ def test_replay_reproduces_answer_trace_and_logged_coercions(tmp_path: Path) -> 
     _record_successful_run(business_root, log_path)
 
     replay = replay_run_record(log_path, "q-1", business_root)
+
+    assert replay["answer_matches"] is True
+    assert replay["execution_trace_matches"] is True
+    assert replay["replay_matches"] is True
+
+
+def test_replay_reproduces_group_threshold_plan(tmp_path: Path) -> None:
+    business_root = tmp_path / "businesses"
+    business_root.mkdir()
+    business = business_root / "biz-001"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute("CREATE TABLE sales (product TEXT, order_id TEXT)")
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?)",
+            [("A", "O-1"), ("A", "O-2"), ("B", "O-1")],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    product = ColumnRef(table_id, "product")
+    order_id = ColumnRef(table_id, "order_id")
+    plan = QueryPlan(
+        base_table=table_id,
+        group_by=(product,),
+        group_filters=(GroupFilter("orders", "gte", 2),),
+        aggregations=(Aggregation("count_distinct", order_id, "orders"),),
+        count_groups=True,
+        output_type="number",
+    )
+    log_path = tmp_path / "logs" / "group-runs.jsonl"
+
+    execute_and_log_business_plan(
+        business,
+        plan,
+        question_id="q-group-count",
+        business_id="biz-001",
+        question="Bao nhiêu sản phẩm có ít nhất hai đơn?",
+        model="manual-plan",
+        log_path=log_path,
+        input_root=business_root,
+    )
+
+    replay = replay_run_record(log_path, "q-group-count", business_root)
 
     assert replay["answer_matches"] is True
     assert replay["execution_trace_matches"] is True
