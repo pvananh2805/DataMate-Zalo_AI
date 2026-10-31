@@ -134,7 +134,7 @@ No source code was changed during Giai đoạn A. This preserves the requested a
 3. **No real model evidence:** the pipeline is validated with synthetic fixtures and stubs only.
 4. **Resource/preflight gaps:** no VRAM sufficiency check, generation timeout, or complete multi-model parameter accounting.
 5. **Reproducibility metadata gaps:** run-level source/config/data/checkpoint hashes and environment versions are incomplete.
-6. **Potential code-sharing gate:** the remote GitHub repository is private, but collaborator membership in the competition team was not verified. Regulations §8.2 restricts private sharing of competition-developed source outside the team during the competition. Do not push another change until repository access is confirmed team-only or an explicit challenge exception applies. Existing history is not changed here.
+6. **Code-sharing gate:** the remote GitHub repository is private and the GitHub collaborator list returned only `pvananh2805` on 2026-10-31. No other direct repository access was listed. Regulations §8.2 restricts private sharing of competition-developed source outside the team during the competition; keep this repository private and recheck access before adding collaborators or publishing code. Training data/checkpoints are not part of the audited commits.
 
 ### Milestone A.1 — real training-data loader smoke
 
@@ -151,7 +151,7 @@ Two focused mocked-runtime tests cover rejection before device transfer and the 
 | Priority | Work | Gate / evidence to close |
 |---|---|---|
 | P0 | Obtain and archive the official DataMate Rule, Evaluation, and Submission Guidance, including Docker/runtime instructions and evaluator version. | Organizer source URL/file and clause-to-test mapping; do not infer missing contract. |
-| P0 | Confirm allowed collaborators for the private repository and preserve the official code/data-sharing boundary. | Verify every collaborator is on the competition team or obtain an explicit exception; keep source and training data out of public repositories. |
+| P0 | Preserve the verified private-repository access boundary. | The current direct collaborator list contains only `pvananh2805`; recheck before adding users or making the repository public. Keep training/test data and checkpoints out of Git. |
 | P1 | Build a rulebook-to-executor coverage matrix from training rulebook text and add general, synthetic tests for supported semantics; return validated abstention for unsupported rules. | Each rule has provenance, an implemented operation, focused tests, and an explicit unsupported path. |
 | P1 | Extend inference preflight and failure controls: local checkpoint manifest checks, all-component parameter accounting, generation-cache/runtime memory estimate, timeout, and complete configuration/run metadata. | Tests with mocked runtimes; later verify with an eligible local checkpoint and GPU. |
 | P1 | Validate schemas, joins, and streaming behavior against permitted training business packages without touching public/private tests. | Record selected business packages and exact checks; keep outputs outside source data and avoid fabricated labels. |
