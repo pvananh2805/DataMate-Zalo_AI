@@ -11,7 +11,14 @@ from datamate.pipeline import (
     execute_question_and_log,
     table_identifier,
 )
-from datamate.query_plan import Aggregation, ColumnRef, GroupFilter, QueryPlan
+from datamate.query_plan import (
+    Aggregation,
+    ColumnRef,
+    Filter,
+    GroupExclusion,
+    GroupFilter,
+    QueryPlan,
+)
 from datamate.replay import ReplayError, replay_run_record
 from datamate.question_understanding import JsonPlanAdapter
 
@@ -110,6 +117,66 @@ def test_replay_reproduces_group_threshold_plan(tmp_path: Path) -> None:
 
     replay = replay_run_record(log_path, "q-group-count", business_root)
 
+    assert replay["answer_matches"] is True
+    assert replay["execution_trace_matches"] is True
+    assert replay["replay_matches"] is True
+
+
+def test_replay_reproduces_group_exclusion_plan(tmp_path: Path) -> None:
+    business_root = tmp_path / "businesses"
+    business_root.mkdir()
+    business = business_root / "biz-001"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE order_lines "
+            "(order_id TEXT, quantity INTEGER, revenue INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO order_lines VALUES (?, ?, ?)",
+            [
+                ("O-1", 1, 20),
+                ("O-1", 1, 10),
+                ("O-2", 1, 40),
+                ("O-2", -1, -40),
+            ],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "order_lines"
+    )
+    table_id = table_identifier(table)
+    order_id = ColumnRef(table_id, "order_id")
+    quantity = ColumnRef(table_id, "quantity")
+    revenue = ColumnRef(table_id, "revenue")
+    plan = QueryPlan(
+        base_table=table_id,
+        group_exclusions=(
+            GroupExclusion(
+                key=order_id,
+                filters=(Filter(quantity, "lt", 0),),
+            ),
+        ),
+        aggregations=(Aggregation("sum", revenue, "revenue"),),
+        output_type="number",
+    )
+    log_path = tmp_path / "logs" / "group-exclusion-runs.jsonl"
+
+    result = execute_and_log_business_plan(
+        business,
+        plan,
+        question_id="q-group-exclusion",
+        business_id="biz-001",
+        question="Tính doanh thu, bỏ toàn bộ đơn có dòng trả.",
+        model="manual-plan",
+        log_path=log_path,
+        input_root=business_root,
+    )
+
+    replay = replay_run_record(log_path, "q-group-exclusion", business_root)
+
+    assert result.answer.value == 30
     assert replay["answer_matches"] is True
     assert replay["execution_trace_matches"] is True
     assert replay["replay_matches"] is True
