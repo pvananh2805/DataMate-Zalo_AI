@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from typing import Iterable, Mapping, Sequence
 
@@ -47,6 +47,7 @@ class ExecutionResult:
 @dataclass
 class _AggregateState:
     count: int = 0
+    scope_matches: int = 0
     total: Decimal = Decimal(0)
     extreme: object = None
 
@@ -175,6 +176,36 @@ def _time_bucket(value: object, bucket: TimeBucket) -> str | None:
     )
 
 
+def _bucket_start(day: date, granularity: str) -> date:
+    if granularity == "day":
+        return day
+    if granularity == "week":
+        return date.fromordinal(day.toordinal() - day.weekday())
+    if granularity == "month":
+        return date(day.year, day.month, 1)
+    if granularity == "quarter":
+        month = ((day.month - 1) // 3) * 3 + 1
+        return date(day.year, month, 1)
+    if granularity == "year":
+        return date(day.year, 1, 1)
+    raise QueryExecutionError(f"Unsupported time bucket granularity: {granularity}")
+
+
+def _next_bucket_start(day: date, granularity: str) -> date:
+    if granularity == "day":
+        return day + timedelta(days=1)
+    if granularity == "week":
+        return day + timedelta(days=7)
+    if granularity == "month":
+        return date(day.year + (day.month == 12), day.month % 12 + 1, 1)
+    if granularity == "quarter":
+        next_month = day.month + 3
+        return date(day.year + (next_month > 12), (next_month - 1) % 12 + 1, 1)
+    if granularity == "year":
+        return date(day.year + 1, 1, 1)
+    raise QueryExecutionError(f"Unsupported time bucket granularity: {granularity}")
+
+
 def _to_decimal(value: object, *, alias: str) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
         raise QueryExecutionError(f"Aggregation {alias!r} requires numeric values")
@@ -213,6 +244,7 @@ def _aggregate(
     rows: Iterable[Mapping[str, Row | None]],
     plan: QueryPlan,
     column_indexes: Mapping[str, Mapping[str, int]],
+    time_coverage: Mapping[str, Sequence[date | None]],
     *,
     max_groups: int,
 ) -> tuple[list[dict[str, object]], int]:
@@ -278,6 +310,7 @@ def _aggregate(
         ):
             if not matches_scope:
                 continue
+            state.scope_matches += 1
             value = (
                 1
                 if aggregation.column is None
@@ -305,6 +338,52 @@ def _aggregate(
                         ) from exc
                     state.count += 1
 
+    if (
+        not group_refs
+        and len(time_buckets) == 1
+        and plan.time_range is not None
+        and time_buckets[0].column == plan.time_range.column
+        and len(plan.aggregations) == 1
+        and plan.aggregations[0].function in {"sum", "count"}
+    ):
+        bucket = time_buckets[0]
+        coverage = time_coverage.get(
+            f"{bucket.column.table}.{bucket.column.column}"
+        )
+        if coverage is not None and coverage[0] is not None and coverage[1] is not None:
+            requested_start = date.fromisoformat(plan.time_range.start)
+            requested_end = date.fromisoformat(plan.time_range.end)
+            empty_range = (
+                not plan.time_range.inclusive_end
+                and requested_start >= requested_end
+            )
+            if not plan.time_range.inclusive_end:
+                if not empty_range:
+                    requested_end -= timedelta(days=1)
+            first_day = max(requested_start, coverage[0])
+            last_day = min(requested_end, coverage[1])
+            if not empty_range and first_day <= last_day:
+                bucket_day = _bucket_start(first_day, bucket.granularity)
+                while bucket_day <= last_day:
+                    label = _time_bucket(bucket_day, bucket)
+                    key = (label,)
+                    if key not in grouped:
+                        if len(grouped) >= max_groups:
+                            raise QueryExecutionError(
+                                f"Group count exceeds configured limit {max_groups}"
+                            )
+                        states = [_AggregateState()]
+                        if plan.aggregations[0].function == "sum":
+                            states[0].count = 1
+                        grouped[key] = (key, states)
+                    try:
+                        bucket_day = _next_bucket_start(
+                            bucket_day,
+                            bucket.granularity,
+                        )
+                    except (OverflowError, ValueError):
+                        break
+
     if not grouped and not group_refs and not time_buckets:
         grouped[()] = ((), [_AggregateState() for _ in plan.aggregations])
 
@@ -327,6 +406,8 @@ def _aggregate(
         for aggregation, state in zip(plan.aggregations, states, strict=True):
             if aggregation.function == "count":
                 value: object = state.count
+            elif state.count == 0 and state.scope_matches == 0:
+                value = Decimal(0)
             elif state.count == 0:
                 value = None
             elif aggregation.function == "sum":
@@ -568,7 +649,11 @@ def execute_query_plan(
         or plan.time_buckets
     ):
         rows, group_count = _aggregate(
-            counted_contexts(), plan, column_indexes, max_groups=max_groups
+            counted_contexts(),
+            plan,
+            column_indexes,
+            time_coverage,
+            max_groups=max_groups,
         )
         _calculate(rows, plan.calculations)
     else:

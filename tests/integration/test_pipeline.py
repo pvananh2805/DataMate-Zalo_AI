@@ -157,8 +157,7 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
             [
                 (10, "2026-01-01"),
                 (15, "2026-01-31T23:59:00"),
-                (25, "2026-02-01"),
-                (100, "2026-03-01"),
+                (20, "2026-03-01"),
             ],
         )
     table = next(
@@ -169,7 +168,7 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
     sold_at = ColumnRef(table_id, "sold_at")
     plan = QueryPlan(
         base_table=table_id,
-        time_range=TimeRange(sold_at, "2026-01-01", "2026-02-28"),
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
         time_buckets=(TimeBucket(sold_at, "month", "month"),),
         aggregations=(Aggregation("sum", amount, "revenue"),),
         sort=(Sort("month", "asc"),),
@@ -190,7 +189,11 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
         "type": "table",
         "answer": {
             "columns": ["month", "revenue"],
-            "rows": [["2026-01", 25], ["2026-02", 25]],
+            "rows": [
+                ["2026-01", 25],
+                ["2026-02", 0],
+                ["2026-03", 20],
+            ],
         },
     }
     assert result.answer.evidence[0].columns == ("amount", "sold_at")
@@ -200,14 +203,14 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
 
     list_plan = QueryPlan(
         base_table=table_id,
-        time_range=TimeRange(sold_at, "2026-01-01", "2026-02-28"),
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
         time_buckets=(TimeBucket(sold_at, "month", "month"),),
         aggregations=(Aggregation("sum", amount, "revenue"),),
         sort=(Sort("month", "asc"),),
         output_type="list",
     )
     list_result = execute_business_plan(business, list_plan)
-    assert list_result.answer.value == [25, 25]
+    assert list_result.answer.value == [25, 0, 20]
     list_submission = json.loads(
         serialize_submission_record(
             "q-monthly-series",
@@ -218,7 +221,7 @@ def test_pipeline_groups_by_month_and_serializes_table_with_bucket_evidence(
     assert list_submission == {
         "id": "q-monthly-series",
         "type": "list",
-        "answer": [25, 25],
+        "answer": [25, 0, 20],
     }
 
 

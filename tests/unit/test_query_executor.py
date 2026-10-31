@@ -433,6 +433,73 @@ def test_time_bucket_groups_calendar_values_and_sums(
 
 
 @pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ("2026-03-01", [("2026-01", Decimal(10)), ("2026-02", Decimal(0))]),
+        ("2026-01-01", []),
+    ],
+)
+def test_time_bucket_fills_only_periods_before_exclusive_end(
+    end: str,
+    expected: list[tuple[str, Decimal]],
+) -> None:
+    table = "sales"
+    sold_at = ColumnRef(table, "sold_at")
+    amount = ColumnRef(table, "amount")
+    plan = QueryPlan(
+        base_table=table,
+        time_range=TimeRange(
+            sold_at,
+            "2026-01-01",
+            end,
+            inclusive_end=False,
+        ),
+        time_buckets=(TimeBucket(sold_at, "month", "period"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+    )
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("sold_at", "amount")},
+        sources={
+            table: [
+                (date(2026, 1, 1), Decimal(10)),
+                (date(2026, 3, 1), Decimal(30)),
+            ]
+        },
+    )
+
+    assert [
+        (row["period"], row["revenue"])
+        for row in result.rows
+    ] == expected
+
+
+def test_time_bucket_enforces_group_limit_for_generated_empty_periods() -> None:
+    table = "sales"
+    sold_at = ColumnRef(table, "sold_at")
+    amount = ColumnRef(table, "amount")
+    plan = QueryPlan(
+        base_table=table,
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
+        time_buckets=(TimeBucket(sold_at, "month", "period"),),
+        aggregations=(Aggregation("sum", amount, "revenue"),),
+    )
+
+    with pytest.raises(QueryExecutionError, match="Group count exceeds configured limit"):
+        execute_query_plan(
+            plan,
+            catalog={table: ("sold_at", "amount")},
+            sources={
+                table: [
+                    (date(2026, 1, 1), Decimal(10)),
+                    (date(2026, 3, 1), Decimal(30)),
+                ]
+            },
+            max_groups=2,
+        )
+
+
+@pytest.mark.parametrize(
     ("values", "inclusive_end", "expected"),
     [
         (
