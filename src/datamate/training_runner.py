@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from .plan_serialization import query_plan_from_json
+from .question_understanding import (
+    QuestionUnderstandingError,
+    validate_abstention_plan,
+)
 from .training_data import TrainingDataError
 
 
@@ -66,13 +70,17 @@ def _inspect_split(path: Path) -> tuple[list[int], set[str], set[str]]:
                 raise TrainingDataError(
                     f"Invalid target QueryPlan at {path}:{len(offsets) + 1}: {exc}"
                 ) from exc
-            if plan.output_type is None or plan.output_type in {
-                "unanswerable",
-                "abstain",
-            }:
+            if plan.output_type is None:
                 raise TrainingDataError(
-                    f"Target must be an executable plan at {path}:{len(offsets) + 1}"
+                    f"Target must declare an output type at {path}:{len(offsets) + 1}"
                 )
+            if plan.output_type in {"unanswerable", "abstain"}:
+                try:
+                    validate_abstention_plan(plan, {plan.base_table: ()})
+                except QuestionUnderstandingError as exc:
+                    raise TrainingDataError(
+                        f"Invalid abstention target at {path}:{len(offsets) + 1}: {exc}"
+                    ) from exc
             offsets.append(offset)
             question_ids.add(question_id)
             business_ids.add(business_id)

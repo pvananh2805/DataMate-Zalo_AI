@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import TextIO
 
 from .pipeline import discover_business_schema
-from .question_understanding import QuestionContext, build_planning_prompt
+from .question_understanding import (
+    QuestionContext,
+    QuestionUnderstandingError,
+    build_planning_prompt,
+    validate_abstention_plan,
+)
 from .query_plan import PlanValidationError, QueryPlan, validate_query_plan
 from .plan_serialization import query_plan_from_dict
 
@@ -274,28 +279,33 @@ def _load_annotations(
             if "query_plan" not in record:
                 raise TrainingDataError(f"{context}: query_plan is required")
             plan = query_plan_from_dict(record["query_plan"])
-            if plan.output_type is None or plan.output_type in {
-                "unanswerable",
-                "abstain",
-            }:
-                raise TrainingDataError(
-                    f"{context}: training annotations must be executable plans"
-                )
             if business_id not in schema_cache:
                 business_path = _safe_business_path(business_root, business_id)
                 schema_cache[business_id] = discover_business_schema(
                     business_path
                 ).columns
             schema = schema_cache[business_id]
-            try:
-                validate_query_plan(
-                    plan,
-                    {table: set(columns) for table, columns in schema.items()},
-                )
-            except PlanValidationError as exc:
+            if plan.output_type in {"unanswerable", "abstain"}:
+                try:
+                    validate_abstention_plan(plan, schema)
+                except QuestionUnderstandingError as exc:
+                    raise TrainingDataError(
+                        f"{context}: invalid abstention annotation: {exc}"
+                    ) from exc
+            elif plan.output_type is None:
                 raise TrainingDataError(
-                    f"{context}: invalid QueryPlan: {exc}"
-                ) from exc
+                    f"{context}: annotations must declare an output type"
+                )
+            else:
+                try:
+                    validate_query_plan(
+                        plan,
+                        {table: set(columns) for table, columns in schema.items()},
+                    )
+                except PlanValidationError as exc:
+                    raise TrainingDataError(
+                        f"{context}: invalid QueryPlan: {exc}"
+                    ) from exc
             prompt = build_planning_prompt(
                 question_record[1],
                 QuestionContext(

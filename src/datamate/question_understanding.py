@@ -150,7 +150,7 @@ class JsonPlanAdapter:
         try:
             plan = query_plan_from_json(raw)
             if plan.output_type in {"unanswerable", "abstain"}:
-                self._validate_abstention(plan, context)
+                validate_abstention_plan(plan, context.schema)
                 return plan
             validate_query_plan(
                 plan,
@@ -166,45 +166,49 @@ class JsonPlanAdapter:
             ) from exc
         return plan
 
-    @staticmethod
-    def _validate_abstention(
-        plan: QueryPlan,
-        context: QuestionContext,
-    ) -> None:
-        if plan.base_table not in context.schema:
+def validate_abstention_plan(
+    plan: QueryPlan,
+    schema: Mapping[str, Sequence[str]],
+) -> None:
+    """Validate a non-executable plan against the same rules used at inference."""
+    if plan.output_type not in {"unanswerable", "abstain"}:
+        raise QuestionUnderstandingError(
+            "Abstention plan output_type must be unanswerable or abstain"
+        )
+    if plan.base_table not in schema:
+        raise QuestionUnderstandingError(
+            "Abstention plan must reference an available base table"
+        )
+    if plan.business_rules or any(
+        (
+            plan.joins,
+            plan.selected_columns,
+            plan.filters,
+            plan.group_by,
+            plan.aggregations,
+            plan.calculations,
+            plan.sort,
+            plan.limit is not None,
+            plan.time_range is not None,
+            plan.evidence_requirements,
+        )
+    ):
+        raise QuestionUnderstandingError(
+            "Abstention plans cannot contain executable query operations or business rules"
+        )
+    status = plan.metadata.get("status")
+    reason = plan.metadata.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise QuestionUnderstandingError(
+            "Abstention plan must include metadata.reason"
+        )
+    if plan.output_type == "abstain":
+        if status != "abstained":
             raise QuestionUnderstandingError(
-                "Abstention plan must reference an available base table"
+                "Abstain plan metadata.status must be 'abstained'"
             )
-        if any(
-            (
-                plan.joins,
-                plan.selected_columns,
-                plan.filters,
-                plan.group_by,
-                plan.aggregations,
-                plan.calculations,
-                plan.sort,
-                plan.limit is not None,
-                plan.time_range is not None,
-                plan.evidence_requirements,
-            )
-        ):
-            raise QuestionUnderstandingError(
-                "Abstention plans cannot contain executable query operations"
-            )
-        status = plan.metadata.get("status")
-        reason = plan.metadata.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
-            raise QuestionUnderstandingError(
-                "Abstention plan must include metadata.reason"
-            )
-        if plan.output_type == "abstain":
-            if status != "abstained":
-                raise QuestionUnderstandingError(
-                    "Abstain plan metadata.status must be 'abstained'"
-                )
-        elif status not in {"unanswerable", "ambiguous", "insufficient_data"}:
-            raise QuestionUnderstandingError(
-                "Unanswerable plan metadata.status must be unanswerable, "
-                "ambiguous, or insufficient_data"
-            )
+    elif status not in {"unanswerable", "ambiguous", "insufficient_data"}:
+        raise QuestionUnderstandingError(
+            "Unanswerable plan metadata.status must be unanswerable, "
+            "ambiguous, or insufficient_data"
+        )

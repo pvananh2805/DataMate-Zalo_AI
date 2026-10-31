@@ -147,6 +147,127 @@ def test_training_data_rejects_mismatched_labels_and_preserves_no_output(
     assert not output.exists()
 
 
+def test_training_data_preserves_validated_abstention_targets(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    questions_path = source / "questions.jsonl"
+    annotations_path = source / "annotations.jsonl"
+    data_root = tmp_path / "businesses"
+    data_root.mkdir()
+    _make_business(data_root, "biz_1")
+    _make_business(data_root, "biz_2")
+    _write_jsonl(
+        questions_path,
+        [
+            {"id": "q1", "business_id": "biz_1", "question": "Câu hỏi mơ hồ?"},
+            {"id": "q2", "business_id": "biz_2", "question": "Tổng doanh thu?"},
+        ],
+    )
+    abstention = {
+        "base_table": "shop.sqlite::sales",
+        "output_type": "unanswerable",
+        "metadata": {
+            "status": "ambiguous",
+            "reason": "Chưa rõ cần tính tổng tiền hay số hóa đơn.",
+        },
+    }
+    _write_jsonl(
+        annotations_path,
+        [
+            {
+                "question_id": "q1",
+                "business_id": "biz_1",
+                "query_plan": abstention,
+            },
+            {
+                "question_id": "q2",
+                "business_id": "biz_2",
+                "query_plan": _plan(),
+            },
+        ],
+    )
+    output = tmp_path / "prepared"
+
+    report = prepare_plan_training_data(
+        questions_path,
+        annotations_path,
+        data_root,
+        output,
+        validation_fraction=0.5,
+    )
+
+    examples = [
+        json.loads(line)
+        for split in ("train.jsonl", "validation.jsonl")
+        for line in (output / split).read_text(encoding="utf-8").splitlines()
+    ]
+    abstention_example = next(example for example in examples if example["question_id"] == "q1")
+    saved_abstention = json.loads(abstention_example["completion"])
+    assert report.annotation_count == 2
+    assert saved_abstention["output_type"] == abstention["output_type"]
+    assert saved_abstention["metadata"] == abstention["metadata"]
+    split_summary = validate_training_splits(
+        output / "train.jsonl",
+        output / "validation.jsonl",
+    )
+    assert split_summary.train_examples + split_summary.validation_examples == 2
+
+
+def test_training_data_rejects_executable_operations_in_abstention(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    questions_path = source / "questions.jsonl"
+    annotations_path = source / "annotations.jsonl"
+    data_root = tmp_path / "businesses"
+    data_root.mkdir()
+    _make_business(data_root, "biz_1")
+    _make_business(data_root, "biz_2")
+    _write_jsonl(
+        questions_path,
+        [
+            {"id": "q1", "business_id": "biz_1", "question": "Không rõ?"},
+            {"id": "q2", "business_id": "biz_2", "question": "Tổng?"},
+        ],
+    )
+    invalid_abstention = {
+        "base_table": "shop.sqlite::sales",
+        "aggregations": [
+            {
+                "function": "sum",
+                "column": {"table": "shop.sqlite::sales", "column": "amount"},
+                "alias": "total",
+            }
+        ],
+        "output_type": "abstain",
+        "metadata": {"status": "abstained", "reason": "Không rõ."},
+    }
+    _write_jsonl(
+        annotations_path,
+        [
+            {
+                "question_id": "q1",
+                "business_id": "biz_1",
+                "query_plan": invalid_abstention,
+            },
+            {
+                "question_id": "q2",
+                "business_id": "biz_2",
+                "query_plan": _plan(),
+            },
+        ],
+    )
+
+    with pytest.raises(TrainingDataError, match="cannot contain executable"):
+        prepare_plan_training_data(
+            questions_path,
+            annotations_path,
+            data_root,
+            tmp_path / "prepared",
+        )
+
+
 def test_training_split_validator_checks_business_leakage_and_plan_json(
     tmp_path: Path,
 ) -> None:

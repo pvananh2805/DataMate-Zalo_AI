@@ -10,16 +10,24 @@ from datamate.training_data import TrainingDataError
 from datamate.training_runner import (
     _JsonlPlanDataset,
     train_query_planner,
+    validate_training_splits,
 )
 
 
-def _write_split(path: Path, question_id: str, business_id: str) -> None:
+def _write_split(
+    path: Path,
+    question_id: str,
+    business_id: str,
+    *,
+    completion: dict[str, object] | None = None,
+) -> None:
     record = {
         "question_id": question_id,
         "business_id": business_id,
         "prompt": "Prompt:",
         "completion": json.dumps(
-            {"base_table": "sales::data", "output_type": "number"}
+            completion
+            or {"base_table": "sales::data", "output_type": "number"}
         ),
     }
     path.write_text(json.dumps(record) + "\n", encoding="utf-8")
@@ -118,3 +126,29 @@ def test_training_dataset_rejects_prompt_over_sequence_limit(tmp_path: Path) -> 
 
     with pytest.raises(TrainingDataError, match="Prompt exceeds max sequence length"):
         dataset[0]
+
+
+def test_training_split_validator_accepts_structurally_valid_abstention(
+    tmp_path: Path,
+) -> None:
+    train_path = tmp_path / "train.jsonl"
+    validation_path = tmp_path / "validation.jsonl"
+    abstention = {
+        "base_table": "sales::data",
+        "output_type": "unanswerable",
+        "metadata": {
+            "status": "insufficient_data",
+            "reason": "Thiếu dữ liệu kỳ trước để so sánh.",
+        },
+    }
+    _write_split(
+        train_path,
+        "q-train",
+        "biz-train",
+        completion=abstention,
+    )
+    _write_split(validation_path, "q-valid", "biz-valid")
+
+    summary = validate_training_splits(train_path, validation_path)
+
+    assert summary.train_examples == summary.validation_examples == 1
