@@ -366,8 +366,12 @@ def _aggregate(
         and len(time_buckets) == 1
         and plan.time_range is not None
         and time_buckets[0].column == plan.time_range.column
-        and len(plan.aggregations) == 1
-        and plan.aggregations[0].function in {"sum", "count", "count_distinct"}
+        and bool(plan.aggregations)
+        and all(
+            aggregation.time_range is None
+            and aggregation.function in {"sum", "count", "count_distinct"}
+            for aggregation in plan.aggregations
+        )
     ):
         bucket = time_buckets[0]
         coverage = time_coverage.get(
@@ -395,9 +399,12 @@ def _aggregate(
                             raise QueryExecutionError(
                                 f"Group count exceeds configured limit {max_groups}"
                             )
-                        states = [_AggregateState()]
-                        if plan.aggregations[0].function == "sum":
-                            states[0].count = 1
+                        states = []
+                        for aggregation in plan.aggregations:
+                            state = _AggregateState()
+                            if aggregation.function == "sum":
+                                state.count = 1
+                            states.append(state)
                         grouped[key] = (key, states)
                     try:
                         bucket_day = _next_bucket_start(

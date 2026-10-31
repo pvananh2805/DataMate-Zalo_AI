@@ -548,6 +548,40 @@ def test_time_bucket_enforces_group_limit_for_generated_empty_periods() -> None:
         )
 
 
+def test_time_bucket_fills_all_supported_aggregations_for_empty_periods() -> None:
+    table = "sales"
+    sold_at = ColumnRef(table, "sold_at")
+    amount = ColumnRef(table, "amount")
+    order_id = ColumnRef(table, "order_id")
+    plan = QueryPlan(
+        base_table=table,
+        time_range=TimeRange(sold_at, "2026-01-01", "2026-03-31"),
+        time_buckets=(TimeBucket(sold_at, "month", "period"),),
+        aggregations=(
+            Aggregation("sum", amount, "revenue"),
+            Aggregation("count_distinct", order_id, "orders"),
+        ),
+        sort=(Sort("period", "asc"),),
+    )
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("sold_at", "amount", "order_id")},
+        sources={
+            table: [
+                (date(2026, 1, 1), Decimal(10), "O-1"),
+                (date(2026, 1, 2), Decimal(15), "O-1"),
+                (date(2026, 3, 1), Decimal(20), "O-2"),
+            ]
+        },
+    )
+
+    assert result.rows == (
+        {"period": "2026-01", "revenue": Decimal(25), "orders": 1},
+        {"period": "2026-02", "revenue": Decimal(0), "orders": 0},
+        {"period": "2026-03", "revenue": Decimal(20), "orders": 1},
+    )
+
+
 def test_time_bucket_preserves_null_sum_for_periods_with_only_null_values() -> None:
     table = "sales"
     sold_at = ColumnRef(table, "sold_at")
