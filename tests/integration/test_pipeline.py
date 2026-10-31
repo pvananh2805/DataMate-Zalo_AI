@@ -423,6 +423,58 @@ def test_pipeline_calculates_cancelled_order_rate_over_all_unique_orders(
     assert result.answer.status == "answered"
 
 
+def test_pipeline_revenue_excludes_cancelled_and_returned_orders(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "revenue-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE order_lines "
+            "(order_id TEXT, status TEXT, order_date TEXT, line_total INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO order_lines VALUES (?, ?, ?, ?)",
+            [
+                ("O-1", "completed", "2026-01-01", 20),
+                ("O-1", "completed", "2026-01-01", 10),
+                ("O-2", "cancelled", "2026-01-02", 50),
+                ("O-3", "returned", "2026-01-03", 15),
+                ("O-3", "returned", "2026-01-03", 25),
+                ("O-4", "in_delivery", "2026-01-04", 5),
+            ],
+        ),
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "order_lines"
+    )
+    table_id = table_identifier(table)
+    status = ColumnRef(table_id, "status")
+    order_date = ColumnRef(table_id, "order_date")
+    line_total = ColumnRef(table_id, "line_total")
+    plan = QueryPlan(
+        base_table=table_id,
+        time_range=TimeRange(order_date, "2026-01-01", "2026-01-31"),
+        aggregations=(
+            Aggregation(
+                "sum",
+                line_total,
+                "revenue",
+                filters=(
+                    Filter(status, "ne", "cancelled"),
+                    Filter(status, "ne", "returned"),
+                ),
+            ),
+        ),
+        output_type="number",
+    )
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.value == 35
+    assert result.answer.status == "answered"
+
+
 def test_table_output_hides_grouping_key_used_only_for_tie_breaks(
     tmp_path: Path,
 ) -> None:
