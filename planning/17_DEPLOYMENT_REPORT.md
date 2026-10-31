@@ -5,7 +5,7 @@
 | Hạng mục | Kết quả |
 |---|---|
 | Inference entrypoint | `scripts/run_inference.py`, chạy batch theo JSONL; nhận cấu hình bằng JSON hoặc flags. |
-| Model | Chưa chọn/đóng gói checkpoint. Qwen3-8B từng được cân nhắc, không phải model đã được xác nhận sử dụng. |
+| Model | Có hướng dẫn tích hợp checkpoint local tại `MODEL_SETUP.md`; chưa chọn/đóng gói checkpoint. Qwen3-8B từng được cân nhắc, không phải model đã được xác nhận sử dụng. |
 | GPU | Bắt buộc NVIDIA CUDA theo backend hiện tại; không có CPU fallback. |
 | Offline inference | Thiết kế local-only trong code, dùng checkpoint local và `local_files_only`; chưa kiểm chứng bằng model thật do thiếu checkpoint/GPU. |
 | Dataset/fixture | Test integration dùng SQLite fixture tổng hợp và planner stub. Không đọc public/private test, không fine-tune và không sửa training data. |

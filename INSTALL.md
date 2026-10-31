@@ -115,6 +115,9 @@ python scripts/run_inference.py --config config/inference.local.json
 Nếu thiếu checkpoint, CUDA hoặc thư viện, CLI sẽ báo lỗi thay vì tải tài nguyên
 từ Internet hoặc fallback sang API.
 
+Xem [MODEL_SETUP.md](MODEL_SETUP.md) để biết tiêu chí checkpoint tương thích,
+cách cấu hình `model_path` và kiểm tra model trên câu hỏi manual.
+
 ## Chạy offline
 
 Sau khi cài dependencies và đặt model local, có thể ngắt mạng trước inference.

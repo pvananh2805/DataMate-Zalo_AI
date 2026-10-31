@@ -64,7 +64,8 @@ precision, độ dài prompt và dữ liệu/cấu hình thực tế. Không nê
 
 ## 3. Cài đặt
 
-Xem [INSTALL.md](INSTALL.md) để cài từng bước trên Windows và Ubuntu/Linux.
+Xem [INSTALL.md](INSTALL.md) để cài từng bước trên Windows và Ubuntu/Linux,
+hoặc [MODEL_SETUP.md](MODEL_SETUP.md) để nối checkpoint local vào inference.
 Inference dependencies ở `requirements-inference.txt`; PyTorch phải khớp GPU,
 driver và môi trường của máy. `requirements-dev.txt` chỉ cài dependency nhẹ để
 phát triển/test, không cài PyTorch hoặc Transformers.
