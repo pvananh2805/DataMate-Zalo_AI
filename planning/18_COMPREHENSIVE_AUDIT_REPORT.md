@@ -29,7 +29,7 @@ Additional paths prepare manually annotated QueryPlans, validate business-disjoi
 
 | Component | Status | Implemented and tested evidence | Data / important limits | Compliance assessment and next work |
 |---|---|---|---|---|
-| Data loader | PARTIAL | Deterministic discovery and streaming readers for CSV, XLSX worksheets, and read-only SQLite; path containment and symlink checks. Unit tests cover representative fixtures. | Tests use fixtures. Prior training inventory discovered 339 table references across 30 businesses, but no end-to-end inference over all real training tables was certified. Header ambiguity exists in training workbooks. | No known write path to source data. Review ambiguous headers and test representative real training packages before relying on inferred schemas. |
+| Data loader | PARTIAL | Deterministic discovery and streaming readers for CSV, XLSX worksheets, and read-only SQLite; path containment and symlink checks. Unit tests cover fixtures. A read-only smoke test discovered all 339 table references across 30 training businesses and read the first row from each with zero failures. | This was a one-row smoke check, not a full scan or inference run. 115 table references carry loader warnings; header ambiguity exists in training workbooks. | No known write path to source data. Review warnings and ambiguous headers before relying on inferred schemas; test full scans/performance separately. |
 | Schema profiler | PARTIAL | Bounded type/null/distinct samples, semantic tags, candidate-key heuristics, package inventory; profiler unit tests exist. | Training archive has structural profiling, not an audited relationship/join map. Candidate keys are sampled heuristics, not proof. | Keep suggestions non-authoritative; validate keys/joins and ambiguous headers against permitted training data. |
 | Data normalization | PARTIAL | Explicit coercion policies for numeric/date/boolean/text values; unit tests cover normalization cases. | Fixture coverage only; ambiguous locale formats need explicit configuration. | Do not silently infer business-specific formats; expand tests only for documented real conventions. |
 | Business context | PARTIAL | Bounded, read-only loading of business README, rulebook, and calendar; source names/sizes/hashes recorded; fixture tests exist. | Context is sent as planner text. It is not parsed into executable rules, and prompt size limits may reject large references. | A document being present does not prove its rule was followed. Build structured rules only from verified text and test their execution. |
@@ -82,7 +82,8 @@ The existing training-only inventory records 3,000 paired questions/answers acro
 
 - **Current run:** `$env:PYTHONPATH='src'; .venv\Scripts\python.exe -m pytest -q` — **201 passed in 3.32s**.
 - **Targeted model/training tests:** **7 passed**, including the new mocked CUDA memory preflight cases.
-- **CLI/build checks after the change:** all eight CLI `--help` checks and `compileall -q src tests scripts` passed. `git diff --check` is recorded after final review below.
+- **CLI/build checks:** all eight CLI `--help` checks, `compileall -q src tests scripts`, `git diff --check`, and UTF-8/trailing-whitespace checks passed.
+- **Read-only training-data loader smoke:** 30 businesses, 339 discovered table references, one first row read from each, 115 tables with warnings, zero loader failures. No public/private test data was opened.
 - **Earlier recorded deployment check:** clean dev environment full suite **199 passed**, compileall, eight CLI `--help` checks, and `git diff --check` passed; see `planning/17_DEPLOYMENT_REPORT.md`.
 - **Synthetic manual test:** previously recorded 100/100 stub-planner runs; 80/80 labeled answers matched fixture expectations. Not model inference and not a challenge score.
 - **Real model inference / validation accuracy / official PA:** NOT RUN.
@@ -106,6 +107,10 @@ No source code was changed during Giai đoạn A. This preserves the requested a
 4. **Resource/preflight gaps:** no VRAM sufficiency check, generation timeout, or complete multi-model parameter accounting.
 5. **Reproducibility metadata gaps:** run-level source/config/data/checkpoint hashes and environment versions are incomplete.
 6. **Potential code-sharing gate:** the remote GitHub repository is private, but collaborator membership in the competition team was not verified. Regulations §8.2 restricts private sharing of competition-developed source outside the team during the competition. Do not push another change until repository access is confirmed team-only or an explicit challenge exception applies. Existing history is not changed here.
+
+### Milestone A.1 — real training-data loader smoke
+
+Ran the existing loader read-only across all 30 permitted training business packages. It discovered 339 tables and read one data row from each with zero load failures. 115 table references emitted existing warnings; this confirms readability, not header correctness, complete row integrity, query-answer correctness, or performance. The public-test archive and private-test material were not opened.
 
 ### Milestone B.1 — minimum CUDA storage preflight
 
