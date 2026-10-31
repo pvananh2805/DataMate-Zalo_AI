@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 from typing import TextIO
 
+from .business_context import BusinessContextDocuments, load_business_context
 from .pipeline import discover_business_schema
 from .question_understanding import (
     QuestionContext,
@@ -221,9 +222,24 @@ def prepare_plan_training_data(
 
 def _load_questions(connection: sqlite3.Connection, source: Path) -> int:
     count = 0
+    forbidden_label_fields = {
+        "answer",
+        "answers",
+        "expected_answer",
+        "gold",
+        "label",
+        "query_plan",
+        "target",
+    }
     with source.open("r", encoding="utf-8-sig") as stream:
         for line_number, record in _read_jsonl(stream, source):
             context = f"{source}:{line_number}"
+            leaked_fields = forbidden_label_fields & record.keys()
+            if leaked_fields:
+                raise TrainingDataError(
+                    f"{context}: question records must not include label fields: "
+                    + ", ".join(sorted(leaked_fields))
+                )
             question_id = _required_string(record, "id", context)
             business_id = _required_string(record, "business_id", context)
             question = _required_string(record, "question", context)
@@ -258,9 +274,17 @@ def _load_annotations(
 ) -> int:
     count = 0
     schema_cache: dict[str, dict[str, tuple[str, ...]]] = {}
+    context_cache: dict[str, BusinessContextDocuments] = {}
+    annotation_fields = {"question_id", "business_id", "query_plan"}
     with source.open("r", encoding="utf-8-sig") as stream:
         for line_number, record in _read_jsonl(stream, source):
             context = f"{source}:{line_number}"
+            unexpected_fields = record.keys() - annotation_fields
+            if unexpected_fields:
+                raise TrainingDataError(
+                    f"{context}: unsupported annotation field(s): "
+                    + ", ".join(sorted(unexpected_fields))
+                )
             question_id = _required_string(record, "question_id", context)
             business_id = _required_string(record, "business_id", context)
             question_record = connection.execute(
@@ -284,7 +308,12 @@ def _load_annotations(
                 schema_cache[business_id] = discover_business_schema(
                     business_path
                 ).columns
+                context_cache[business_id] = load_business_context(
+                    business_path,
+                    business_root,
+                )
             schema = schema_cache[business_id]
+            documents = context_cache[business_id]
             if plan.output_type in {"unanswerable", "abstain"}:
                 try:
                     validate_abstention_plan(plan, schema)
@@ -311,6 +340,10 @@ def _load_annotations(
                 QuestionContext(
                     schema=schema,
                     as_of_date=question_record[2],
+                    rulebook=documents.rulebook,
+                    business_readme=documents.business_readme,
+                    calendar_columns=documents.calendar_columns,
+                    calendar_rows=documents.calendar_rows,
                 ),
             )
             example = {

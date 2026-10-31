@@ -56,6 +56,18 @@ def test_training_data_uses_manual_plans_and_business_level_holdout(
     data_root.mkdir()
     _make_business(data_root, "biz_1")
     _make_business(data_root, "biz_2")
+    (data_root / "rulebook.md").write_text(
+        "Training rulebook fixture text.\n",
+        encoding="utf-8",
+    )
+    (data_root / "calendar.csv").write_text(
+        "solar_date,lunar_date\n2026-01-01,2025-11-13\n",
+        encoding="utf-8",
+    )
+    (data_root / "biz_1" / "README.md").write_text(
+        "Business-specific amount note.\n",
+        encoding="utf-8",
+    )
     _write_jsonl(
         questions_path,
         [
@@ -108,6 +120,9 @@ def test_training_data_uses_manual_plans_and_business_level_holdout(
     ]
     assert {example["question_id"] for example in examples} == {"q1", "q2"}
     assert all("amount" in example["prompt"] for example in examples)
+    assert all("Training rulebook fixture text." in example["prompt"] for example in examples)
+    assert all("solar_date" in example["prompt"] for example in examples)
+    assert any("Business-specific amount note." in example["prompt"] for example in examples)
     assert (output / "preparation_report.json").is_file()
 
 
@@ -265,6 +280,69 @@ def test_training_data_rejects_executable_operations_in_abstention(
             annotations_path,
             data_root,
             tmp_path / "prepared",
+        )
+
+
+def test_training_data_rejects_gold_fields_in_questions_and_annotations(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    questions_path = source / "questions.jsonl"
+    annotations_path = source / "annotations.jsonl"
+    data_root = tmp_path / "businesses"
+    data_root.mkdir()
+    _make_business(data_root, "biz_1")
+    _make_business(data_root, "biz_2")
+
+    _write_jsonl(
+        questions_path,
+        [
+            {
+                "id": "q1",
+                "business_id": "biz_1",
+                "question": "Tổng doanh thu?",
+                "answer": 10,
+            },
+            {"id": "q2", "business_id": "biz_2", "question": "Tổng tiền?"},
+        ],
+    )
+    _write_jsonl(annotations_path, [])
+
+    with pytest.raises(TrainingDataError, match="must not include label fields"):
+        prepare_plan_training_data(
+            questions_path,
+            annotations_path,
+            data_root,
+            tmp_path / "prepared-question-leak",
+        )
+
+    _write_jsonl(
+        questions_path,
+        [
+            {"id": "q1", "business_id": "biz_1", "question": "Tổng doanh thu?"},
+            {"id": "q2", "business_id": "biz_2", "question": "Tổng tiền?"},
+        ],
+    )
+    _write_jsonl(
+        annotations_path,
+        [
+            {
+                "question_id": "q1",
+                "business_id": "biz_1",
+                "query_plan": _plan(),
+                "answer": 10,
+            },
+            {"question_id": "q2", "business_id": "biz_2", "query_plan": _plan()},
+        ],
+    )
+
+    with pytest.raises(TrainingDataError, match="unsupported annotation field"):
+        prepare_plan_training_data(
+            questions_path,
+            annotations_path,
+            data_root,
+            tmp_path / "prepared-annotation-leak",
         )
 
 
