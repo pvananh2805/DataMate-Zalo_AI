@@ -34,6 +34,7 @@ def test_inference_config_resolves_relative_paths_from_config_file(
                 "submission_output": "output/submission.jsonl",
                 "as_of_date": "2026-01-31",
                 "precision": "fp16",
+                "max_prompt_tokens": 8192,
                 "generation_timeout_seconds": 30,
             }
         ),
@@ -50,6 +51,7 @@ def test_inference_config_resolves_relative_paths_from_config_file(
     )
     assert config["as_of_date"] == "2026-01-31"
     assert config["precision"] == "fp16"
+    assert config["max_prompt_tokens"] == 8192
     assert config["generation_timeout_seconds"] == 30
 
 
@@ -82,6 +84,30 @@ def test_inference_config_rejects_invalid_generation_timeout(
     )
 
     with pytest.raises(ValueError, match="generation_timeout_seconds"):
+        _read_inference_config(config_path)
+
+
+@pytest.mark.parametrize("token_limit", [True, 0, 1.5])
+def test_inference_config_rejects_invalid_prompt_token_limit(
+    tmp_path: Path,
+    token_limit: object,
+) -> None:
+    config_path = tmp_path / "inference.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "input": "questions.jsonl",
+                "business_data_root": "business-data",
+                "model_path": "model",
+                "log": "run.jsonl",
+                "submission_output": "submission.jsonl",
+                "max_prompt_tokens": token_limit,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="max_prompt_tokens"):
         _read_inference_config(config_path)
 
 
@@ -211,6 +237,7 @@ def test_inference_processor_integrates_context_logging_and_submission(
         default_as_of_date="2026-01-31",
         inference_config={
             "precision": "bf16",
+            "max_prompt_tokens": 16_384,
             "max_new_tokens": 1024,
             "parameter_cap": 15_000_000_000,
             "generation_timeout_seconds": 30,
@@ -228,6 +255,7 @@ def test_inference_processor_integrates_context_logging_and_submission(
     run_record = run_records[0]
     assert run_record["input"]["metadata"]["inference_config"] == {
         "precision": "bf16",
+        "max_prompt_tokens": 16_384,
         "max_new_tokens": 1024,
         "parameter_cap": 15_000_000_000,
         "generation_timeout_seconds": 30,

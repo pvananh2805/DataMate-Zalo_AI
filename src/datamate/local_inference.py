@@ -173,9 +173,16 @@ class LocalTransformersBackend:
             raise LocalModelError("model_path must be a local checkpoint directory")
         if precision not in {"fp32", "fp16", "bf16"}:
             raise ValueError("precision must be fp32, fp16, or bf16")
-        if not 1 <= max_new_tokens <= 4096:
+        if (
+            isinstance(max_new_tokens, bool)
+            or not isinstance(max_new_tokens, int)
+            or not 1 <= max_new_tokens <= 4096
+        ):
             raise ValueError("max_new_tokens must be between 1 and 4096")
-        if max_prompt_tokens < 1 or parameter_cap < 1 or cpu_threads < 1:
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+            for value in (max_prompt_tokens, parameter_cap, cpu_threads)
+        ):
             raise ValueError("token limits, parameter cap, and threads must be positive")
         if generation_timeout_seconds is not None:
             try:

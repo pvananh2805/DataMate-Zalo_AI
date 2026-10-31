@@ -108,6 +108,7 @@ Trong `config\inference.local.json`, sửa tối thiểu:
   "log": "..\\output\\run.jsonl",
   "submission_output": "..\\output\\submission.jsonl",
   "precision": "bf16",
+  "max_prompt_tokens": 16384,
   "max_new_tokens": 1024,
   "parameter_cap": 15000000000,
   "generation_timeout_seconds": null
@@ -120,8 +121,10 @@ mục chứa config. Config cá nhân `config/inference.local.json` được Git
 `generation_timeout_seconds` là giới hạn tùy chọn cho mỗi lần sinh; `null`
 nghĩa là không đặt giới hạn thời gian. Nếu cấu hình, backend chuyển giới hạn cho
 Transformers và báo lỗi thay vì trả một QueryPlan bị cắt khi hết thời gian.
-Các thư mục input/output phải tồn tại phù hợp; output không được nằm trong
-input/data root.
+`max_prompt_tokens` giới hạn độ dài phần câu hỏi/ngữ cảnh đã token hóa; phần
+token sinh tối đa được giới hạn riêng bởi `max_new_tokens`. Ước lượng KV cache
+dùng tổng hai giới hạn này. Các thư mục input/output phải tồn tại phù hợp;
+output không được nằm trong input/data root.
 
 ### Chuẩn hóa ô trống lặp lại theo nhóm (tùy chọn)
 
@@ -189,6 +192,9 @@ Nếu chỉ đổi precision hoặc giới hạn sinh, có thể override bằng
 ```powershell
 python scripts\run_inference.py --config config\inference.local.json --precision fp16 --max-new-tokens 512
 ```
+
+Có thể đặt `--max-prompt-tokens` để thay giới hạn prompt; tổng context tối đa
+dự kiến là prompt limit cộng `max_new_tokens`.
 
 CLI nạp model một lần, xử lý câu hỏi JSONL tuần tự và ghi cấu hình inference
 cùng run log và submission

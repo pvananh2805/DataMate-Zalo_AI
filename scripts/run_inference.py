@@ -106,6 +106,7 @@ def _read_inference_config(path: Path) -> dict[str, Any]:
     value_fields = {
         "as_of_date",
         "precision",
+        "max_prompt_tokens",
         "max_new_tokens",
         "parameter_cap",
         "generation_timeout_seconds",
@@ -151,6 +152,7 @@ def _read_inference_config(path: Path) -> dict[str, Any]:
         raise ValueError("Configuration precision must be fp32, fp16, or bf16")
     config["precision"] = precision
     for field, default, minimum, maximum in (
+        ("max_prompt_tokens", 16_384, 1, None),
         ("max_new_tokens", 1024, 1, 4096),
         ("parameter_cap", 15_000_000_000, 1, None),
     ):
@@ -338,6 +340,7 @@ def main() -> None:
         help="JSONL tham khảo rulebook training; chưa xác minh với validator cuộc thi",
     )
     parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"))
+    parser.add_argument("--max-prompt-tokens", type=int)
     parser.add_argument("--max-new-tokens", type=int)
     parser.add_argument("--parameter-cap", type=int)
     parser.add_argument("--generation-timeout-seconds", type=float)
@@ -393,6 +396,11 @@ def main() -> None:
         except (TypeError, ValueError):
             parser.error("as-of-date must be an ISO-8601 date")
     precision = args.precision or config.get("precision", "bf16")
+    max_prompt_tokens = (
+        args.max_prompt_tokens
+        if args.max_prompt_tokens is not None
+        else config.get("max_prompt_tokens", 16_384)
+    )
     max_new_tokens = (
         args.max_new_tokens
         if args.max_new_tokens is not None
@@ -408,9 +416,23 @@ def main() -> None:
         if args.generation_timeout_seconds is not None
         else config.get("generation_timeout_seconds")
     )
-    if not isinstance(max_new_tokens, int) or not 1 <= max_new_tokens <= 4096:
+    if (
+        isinstance(max_prompt_tokens, bool)
+        or not isinstance(max_prompt_tokens, int)
+        or max_prompt_tokens < 1
+    ):
+        parser.error("max-prompt-tokens must be positive")
+    if (
+        isinstance(max_new_tokens, bool)
+        or not isinstance(max_new_tokens, int)
+        or not 1 <= max_new_tokens <= 4096
+    ):
         parser.error("max-new-tokens must be between 1 and 4096")
-    if not isinstance(parameter_cap, int) or parameter_cap < 1:
+    if (
+        isinstance(parameter_cap, bool)
+        or not isinstance(parameter_cap, int)
+        or parameter_cap < 1
+    ):
         parser.error("parameter-cap must be positive")
     if (
         generation_timeout_seconds is not None
@@ -440,6 +462,7 @@ def main() -> None:
     backend = LocalTransformersBackend(
         model_path,
         precision=precision,
+        max_prompt_tokens=max_prompt_tokens,
         max_new_tokens=max_new_tokens,
         parameter_cap=parameter_cap,
         generation_timeout_seconds=generation_timeout_seconds,
@@ -471,6 +494,7 @@ def main() -> None:
             default_as_of_date=as_of_date,
             inference_config={
                 "precision": precision,
+                "max_prompt_tokens": max_prompt_tokens,
                 "max_new_tokens": max_new_tokens,
                 "parameter_cap": parameter_cap,
                 "generation_timeout_seconds": generation_timeout_seconds,

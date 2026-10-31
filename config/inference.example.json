@@ -9,6 +9,7 @@
   "calendar": null,
   "as_of_date": null,
   "precision": "bf16",
+  "max_prompt_tokens": 16384,
   "max_new_tokens": 1024,
   "parameter_cap": 15000000000,
   "generation_timeout_seconds": null
