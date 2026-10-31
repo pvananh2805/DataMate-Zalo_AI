@@ -50,7 +50,7 @@
 | Evaluation | Đã có evaluator local với string/list/table aliases và diagnostic reward sum; chưa chạy trên model/validation thực, chưa bao phủ đầy đủ list ranking/tie-break rules, chưa xác minh phép tổng hợp PA chính thức và không công bố điểm PA. |
 | Logging/reproducibility | Có JSONL log và replay xác định QueryPlan đã ghi, đối chiếu answer/trace; chưa tái chạy planner/model, ghi checksum dữ liệu, dependency lock hoặc checkpoint revision. |
 | Docker/submission | Docker CLI chưa có; chưa xác minh Docker guideline, entrypoint/đường dẫn và schema `id/type/answer` với submission validator hiện hành. |
-| Tài liệu cuộc thi | Portal xác nhận mô tả cấp cao và `.jsonl`; training rulebook có format/reward tham khảo. Official English/Vietnamese regulations PDF đã tìm thấy qua portal (`https://dl-challenge.zalo.ai/zalo-ai-challenge-regulations-en.pdf` và `...-vi.pdf`), nhưng chưa trích xuất được nội dung để xác minh. Giới hạn 15B, cutoff/ngày phát hành, license, quy tắc offline/dữ liệu, cách tổng hợp PA và Docker vẫn cần đối chiếu văn bản chính thức. |
+| Tài liệu cuộc thi | Đã đọc Regulations tiếng Việt qua PDF chính thức; portal API chứa challenge-specific Evaluation/Rule/Submission Guidance vẫn trả `error_code=-10 (Invalid Request)`. Quy định chung xác nhận lịch, cách dùng/bảo vệ dữ liệu, nguồn mở, đóng băng mô hình và việc scoring theo metric trên portal; chưa xác minh được giới hạn tham số 15B, cutoff/ngày phát hành, giấy phép checkpoint, offline inference, công thức PA và Docker/runtime do các mục kỹ thuật của DataMate chưa tải được. |
 
 ## Dữ liệu, tài nguyên và an toàn
 
@@ -58,6 +58,17 @@
 - Public-test ZIP: 64.149.714 byte; SHA-256 `46FB50F926ED1510B9F099A53918F45E304B256680452C93E74401B4A5442C52`; archive chưa được mở.
 - Máy phát triển: Intel i3-1115G4, RAM 12 GB, Intel UHD, không có NVIDIA/CUDA; Docker CLI không có. Trong lần profile streaming, working set quan sát gần cuối khoảng 45 MB (không phải số đo peak).
 - Dữ liệu gốc chỉ đọc; source profile JSON và dataset nằm ngoài phạm vi commit. Không sử dụng public/private test để huấn luyện hoặc ghi nhớ đáp án.
+
+## Đối chiếu Regulations chính thức (31/10/2026)
+
+- Nguồn tiếng Việt: `https://dl-challenge.zalo.ai/zalo-ai-challenge-regulations-vi.pdf`, 14 trang, SHA-256 `287E1815DADDEFF1C0B4F7B08084004B90460AAC3BC8BDF058C11B63A9E9EF6B`; bản tiếng Anh: `https://dl-challenge.zalo.ai/zalo-ai-challenge-regulations-en.pdf`, 15 trang, SHA-256 `C092093BB42F0A53B343F4F79E4EFFF412103B8D8F40A187C2188D8BEC61FF23`. Đã tải và trích xuất văn bản cục bộ; không lưu PDF hoặc extractor trong repository.
+- Mục 3 (trang 4): challenge bắt đầu 26/10/2026; hạn nộp ban đầu 16/11/2026 23:59 GMT+7, nộp gồm training code, testing code và model; private test dự kiến công bố 20/11, kết quả cuối hạn 23/11. Ban Tổ chức có quyền cập nhật lịch; tiếp tục theo dõi portal.
+- Mục 4.1–4.3 (trang 5): competition data chỉ dùng cho mục đích phi thương mại/học thuật của cuộc thi; khi sử dụng phải trích dẫn `challenge.zalo.ai`; dữ liệu cá nhân phải được xóa/hủy khi kết thúc thời gian cuộc thi theo luật. Phải ngăn người ngoài đội chưa chấp thuận thể lệ truy cập dữ liệu; không chia sẻ riêng, truyền, xuất bản hoặc cung cấp competition data cho bên thứ ba trong thời gian thi.
+- Mục 4.2 (trang 5): được bổ sung nhãn/annotation thủ công cho training; cấm dùng nhãn thủ công hoặc dự đoán người trên validation/test để tạo submission. Quy trình hiện chỉ nhận annotation QueryPlan do người duyệt cho training; không suy ra nhãn từ test.
+- Mục 4.4–4.5 (trang 6): external data chỉ áp dụng nếu hạng mục cho phép và phải đáp ứng luật/bảo vệ dữ liệu; mã nguồn mở phải có license OSI hợp lệ, không hạn chế sử dụng thương mại, trừ chấp thuận bằng văn bản phù hợp.
+- Mục 5.1–5.2 (trang 6–7): tối đa 5 submission/ngày, chỉ chọn 1 bài cuối để chấm; trước khi phát hành private test cần freeze model và nộp training/testing code, model, mô tả phương pháp, hướng dẫn chạy. Runtime limit được nêu trong mô tả hạng mục nhưng chưa truy cập được.
+- Mục 6.1 (trang 7): scoring theo evaluation metric công bố trên portal; không có công thức PA trong Regulations chung. Cùng điểm trên public leaderboard thì submission sớm hơn xếp cao hơn.
+- Các giới hạn 15B, ngày cutoff/model release, yêu cầu inference offline, Docker/interface và công thức PA không xuất hiện trong phần Regulations chung đã đọc; **không suy diễn chúng từ tài liệu này**. Portal challenge-detail API với `name` thuộc Evaluation/Rule/Submission Guidance và `title=2` trả `error_code=-10`, nên cần development kit/technical brief hoặc truy cập portal hợp lệ để xác minh.
 
 ## Mốc tiếp theo
 
