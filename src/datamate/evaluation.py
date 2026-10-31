@@ -17,6 +17,36 @@ class EvaluationError(ValueError):
     """Raised when an evaluation input or output cannot be validated."""
 
 
+def answers_match(
+    expected_type: str,
+    expected_value: object,
+    predicted_type: str,
+    predicted_value: object,
+) -> bool:
+    """Compare one answer pair using the local evaluator's value semantics."""
+    if expected_type != predicted_type:
+        return False
+    try:
+        expected = _canonical_value(expected_type, expected_value)
+        predicted = _canonical_value(predicted_type, predicted_value)
+    except EvaluationError:
+        return False
+    return _same_answer_value(
+        expected_type,
+        expected,
+        predicted,
+        allow_numeric_strings=False,
+        gold_aliases="[]",
+    )
+
+
+def validate_answer_value(answer_type: str, value: object) -> None:
+    """Validate one answer value using the same schema as local evaluation."""
+    if answer_type == "table" and not _is_submission_table(value):
+        raise EvaluationError("table answer has an invalid submission shape")
+    _canonical_value(answer_type, value)
+
+
 def _validate_nested_value(value: object) -> bool:
     if value is None or isinstance(value, (str, bool, int, date, datetime)):
         return True
