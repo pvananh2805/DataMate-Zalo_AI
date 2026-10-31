@@ -14,15 +14,16 @@
 - Đã thêm QueryPlan có cấu trúc và kiểm tra bảng/cột, join liên thông, filter, aggregation, sort, time range, limit, output type và evidence reference; không nhận SQL hay mã thực thi từ câu hỏi.
 - Đã thêm executor xác định, streaming theo hàng, có join giới hạn bộ nhớ, filter/group, SUM/COUNT/AVG/MIN/MAX, ranking/sort/top-K, tỷ lệ/tăng trưởng, trace và tổng Decimal.
 - Đã thêm `src/datamate/normalization.py`: chuẩn hóa theo policy tường minh cho number/integer/date/datetime/boolean/text/identifier; không đoán locale/ngày, giữ streaming, từ chối giá trị sai/row-width/header trùng. Pipeline nhận coercion theo `ColumnRef` và ghi policy vào metadata log để tái lập; chưa tự sinh policy từ profile.
+- Đã thêm bộ giải mã JSON nghiêm ngặt cho QueryPlan và adapter question-understanding độc lập model: prompt có schema/ngày tham chiếu/rulebook context, từ chối JSON lỗi, field lạ, key trùng, non-finite, code fence và cột ngoài schema. Pipeline tích hợp đường đi câu hỏi → planner → executor → validator → log; adapter chỉ nhận backend được inject, chưa chọn hoặc tải model inference.
 - Đã thêm kiểm tra kiểu câu trả lời, finite number/percent, date, boolean, list/table, evidence và các trạng thái no-data/unanswerable/ambiguous/insufficient-data/abstain. Pipeline `execute_business_plan` nối loader → plan validation → executor → answer validation trên fixture SQLite.
 - Đã nối logging JSONL cho pipeline: lưu input, model, QueryPlan, trace, evidence, answer, thời gian và lỗi đã nhận diện; có đọc lại/kiểm schema log và chặn ghi trong input root. Chưa có chức năng tái thực thi từ log.
-- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **62 passed** sau khi tích hợp chuẩn hóa; `compileall` cho `src`, `tests` và `git diff --check` thành công. Lệnh `pytest` từ Python toàn cục không tìm thấy package `datamate`; dùng virtualenv và `PYTHONPATH=src`.
+- `PYTHONPATH=src .venv\Scripts\python.exe -m pytest -q`: **73 passed** sau khi tích hợp chuẩn hóa và đường đi question-to-plan; `compileall` cho `src`, `tests`, `scripts` và `git diff --check` thành công. Lệnh `pytest` từ Python toàn cục không tìm thấy package `datamate`; dùng virtualenv và `PYTHONPATH=src`.
 - Public-test archive vẫn nguyên trạng, chưa giải nén/đọc. Không có dữ liệu training/public-test trong source commit trước đó.
 
 ## Đã triển khai nhưng chưa đủ để dùng trong inference cuộc thi
 
 - Header Excel được phát hiện heuristic; 81 worksheet có dòng metadata/tiêu đề đầu trang bị bỏ qua có cảnh báo. Cần xác nhận từng header trước khi planner tin cậy.
-- Pipeline executor mới chạy khi có QueryPlan hợp lệ. Chưa có bộ hiểu câu hỏi tiếng Việt/model adapter tạo plan từ câu hỏi tự nhiên.
+- Adapter question-understanding hiện chuyển yêu cầu qua backend được inject thành QueryPlan JSON; đây chưa phải model tiếng Việt chạy offline được chọn/đóng gói, và chưa đánh giá độ chính xác ngữ nghĩa trên tập validation.
 - Answer validator và executor có unit/integration tests; chưa có serializer chính thức vì chưa xác minh schema output/evaluator của ban tổ chức.
 - Evidence hiện là tham chiếu bảng/cột, số dòng và filter summary; chưa có hệ thống trích dẫn record-level đủ để tái kiểm chứng mọi phép tính.
 
@@ -30,7 +31,7 @@
 
 | Hạng mục | Trạng thái / việc còn lại |
 |---|---|
-| Question understanding tiếng Việt | Chưa có parser/model inference tích hợp; cần ánh xạ ý định, thực thể, từ đồng nghĩa, thời gian và điều kiện vào QueryPlan. |
+| Question understanding tiếng Việt | Đã có giao diện backend độc lập, prompt schema-aware, JSON parser nghiêm ngặt và pipeline tích hợp; chưa có backend/model offline được chọn, xử lý ambiguity/abstain chính thức hoặc benchmark ngữ nghĩa. |
 | Chuẩn hóa dữ liệu | Đã có coercion có kiểm soát nhưng chưa có cấu hình policy được xác nhận cho từng bảng/cột training; cần profile-assisted policy authoring, kiểm tra dữ liệu đầy đủ và xử lý header Excel cần review. |
 | Query planning/executor hoàn chỉnh | Plan validator và executor hiện có là lõi thử nghiệm; rulebook chưa được thực thi trong executor, chưa hỗ trợ so sánh hai kỳ và chứng cứ đầu ra chưa đủ để tái kiểm chứng mọi phép tính. |
 | Model selection/offline inference | Chưa chọn/tải model; chưa benchmark parameter count, ngày phát hành, license, tiếng Việt, tốc độ/RAM và cấu trúc plan. |
@@ -50,7 +51,7 @@
 ## Mốc tiếp theo
 
 1. Tạo/kiểm chứng policy chuẩn hóa theo schema, tập trung CSV/XLSX và định dạng cột bất thường.
-2. Phát triển question-understanding/model adapter độc lập, chỉ xuất QueryPlan đã validate.
+2. Đánh giá backend/model offline đủ điều kiện; triển khai adapter thực tế, xử lý ambiguity/abstain và benchmark trên validation.
 3. Hoàn thiện evidence/answer/output/logging và evaluation trên training validation khi có schema/metric được phép.
 4. Chuẩn bị training/fine-tuning có thể chạy trên GPU khác; không huấn luyện lớn trên laptop.
 5. Chỉ chốt model, Docker và submission sau khi xác minh tài liệu chính thức.

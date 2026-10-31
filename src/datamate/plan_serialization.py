@@ -1,0 +1,266 @@
+"""Strict JSON decoding for model-produced declarative query plans."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from .query_plan import (
+    Aggregation,
+    Calculation,
+    ColumnRef,
+    Filter,
+    Join,
+    QueryPlan,
+    Sort,
+    TimeRange,
+)
+
+
+class QueryPlanFormatError(ValueError):
+    """Raised when a serialized plan is malformed or contains unknown fields."""
+
+
+def _object(value: object, context: str, allowed: set[str]) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+        raise QueryPlanFormatError(f"{context} must be a JSON object")
+    unknown = set(value) - allowed
+    if unknown:
+        raise QueryPlanFormatError(
+            f"{context} has unknown fields: {', '.join(sorted(unknown))}"
+        )
+    return value
+
+
+def _string(value: object, context: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise QueryPlanFormatError(f"{context} must be a non-empty string")
+    return value
+
+
+def _boolean(value: object, context: str) -> bool:
+    if not isinstance(value, bool):
+        raise QueryPlanFormatError(f"{context} must be a boolean")
+    return value
+
+
+def _sequence(value: object, context: str) -> Sequence[object]:
+    if not isinstance(value, list):
+        raise QueryPlanFormatError(f"{context} must be a JSON array")
+    return value
+
+
+def _column_ref(value: object, context: str) -> ColumnRef:
+    data = _object(value, context, {"table", "column"})
+    return ColumnRef(
+        table=_string(data.get("table"), f"{context}.table"),
+        column=_string(data.get("column"), f"{context}.column"),
+    )
+
+
+def _filter_value(value: object) -> object:
+    if isinstance(value, list):
+        return tuple(_filter_value(item) for item in value)
+    if isinstance(value, dict):
+        raise QueryPlanFormatError("filter values cannot be JSON objects")
+    return value
+
+
+def _reject_json_constant(value: str) -> Any:
+    raise QueryPlanFormatError(f"non-finite JSON number is not allowed: {value}")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise QueryPlanFormatError(f"duplicate JSON field is not allowed: {key}")
+        result[key] = value
+    return result
+
+
+def query_plan_from_json(raw: str) -> QueryPlan:
+    """Decode a pure JSON object; prose, code fences, and extra fields are rejected."""
+    try:
+        data = json.loads(
+            raw,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise QueryPlanFormatError(f"query plan is not valid JSON: {exc}") from exc
+    return query_plan_from_dict(data)
+
+
+def query_plan_from_dict(value: object) -> QueryPlan:
+    """Convert a JSON-compatible mapping to typed plan objects without inference."""
+    fields = {
+        "base_table",
+        "joins",
+        "selected_columns",
+        "filters",
+        "group_by",
+        "aggregations",
+        "calculations",
+        "sort",
+        "limit",
+        "time_range",
+        "business_rules",
+        "output_type",
+        "evidence_requirements",
+        "metadata",
+    }
+    data = _object(value, "query plan", fields)
+    base_table = _string(data.get("base_table"), "base_table")
+
+    joins = []
+    for index, item in enumerate(_sequence(data.get("joins", []), "joins")):
+        context = f"joins[{index}]"
+        join = _object(item, context, {"left", "right", "kind"})
+        joins.append(
+            Join(
+                left=_column_ref(join.get("left"), f"{context}.left"),
+                right=_column_ref(join.get("right"), f"{context}.right"),
+                kind=_string(join.get("kind", "inner"), f"{context}.kind"),
+            )
+        )
+
+    selected_columns = tuple(
+        _column_ref(item, f"selected_columns[{index}]")
+        for index, item in enumerate(
+            _sequence(data.get("selected_columns", []), "selected_columns")
+        )
+    )
+    filters = []
+    for index, item in enumerate(_sequence(data.get("filters", []), "filters")):
+        context = f"filters[{index}]"
+        filter_data = _object(item, context, {"column", "operator", "value"})
+        filters.append(
+            Filter(
+                column=_column_ref(filter_data.get("column"), f"{context}.column"),
+                operator=_string(
+                    filter_data.get("operator"), f"{context}.operator"
+                ),
+                value=_filter_value(filter_data.get("value")),
+            )
+        )
+
+    group_by = tuple(
+        _column_ref(item, f"group_by[{index}]")
+        for index, item in enumerate(_sequence(data.get("group_by", []), "group_by"))
+    )
+    aggregations = []
+    for index, item in enumerate(
+        _sequence(data.get("aggregations", []), "aggregations")
+    ):
+        context = f"aggregations[{index}]"
+        aggregation = _object(item, context, {"function", "column", "alias"})
+        column_value = aggregation.get("column")
+        aggregations.append(
+            Aggregation(
+                function=_string(
+                    aggregation.get("function"), f"{context}.function"
+                ),
+                column=(
+                    None
+                    if column_value is None
+                    else _column_ref(column_value, f"{context}.column")
+                ),
+                alias=_string(aggregation.get("alias"), f"{context}.alias"),
+            )
+        )
+
+    calculations = []
+    for index, item in enumerate(
+        _sequence(data.get("calculations", []), "calculations")
+    ):
+        context = f"calculations[{index}]"
+        calculation = _object(item, context, {"function", "left", "right", "alias"})
+        calculations.append(
+            Calculation(
+                function=_string(
+                    calculation.get("function"), f"{context}.function"
+                ),
+                left=_string(calculation.get("left"), f"{context}.left"),
+                right=_string(calculation.get("right"), f"{context}.right"),
+                alias=_string(calculation.get("alias"), f"{context}.alias"),
+            )
+        )
+
+    sort = []
+    for index, item in enumerate(_sequence(data.get("sort", []), "sort")):
+        context = f"sort[{index}]"
+        sort_data = _object(item, context, {"key", "direction"})
+        key_value = sort_data.get("key")
+        key = (
+            _column_ref(key_value, f"{context}.key")
+            if isinstance(key_value, dict)
+            else _string(key_value, f"{context}.key")
+        )
+        sort.append(
+            Sort(
+                key=key,
+                direction=_string(
+                    sort_data.get("direction", "asc"), f"{context}.direction"
+                ),
+            )
+        )
+
+    limit = data.get("limit")
+    if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)):
+        raise QueryPlanFormatError("limit must be an integer or null")
+
+    time_range_value = data.get("time_range")
+    time_range = None
+    if time_range_value is not None:
+        time_data = _object(
+            time_range_value,
+            "time_range",
+            {"column", "start", "end", "inclusive_end"},
+        )
+        time_range = TimeRange(
+            column=_column_ref(time_data.get("column"), "time_range.column"),
+            start=_string(time_data.get("start"), "time_range.start"),
+            end=_string(time_data.get("end"), "time_range.end"),
+            inclusive_end=_boolean(
+                time_data.get("inclusive_end", True),
+                "time_range.inclusive_end",
+            ),
+        )
+
+    business_rules = tuple(
+        _string(item, f"business_rules[{index}]")
+        for index, item in enumerate(
+            _sequence(data.get("business_rules", []), "business_rules")
+        )
+    )
+    output_type = data.get("output_type")
+    if output_type is not None and not isinstance(output_type, str):
+        raise QueryPlanFormatError("output_type must be a string or null")
+    evidence_requirements = tuple(
+        _column_ref(item, f"evidence_requirements[{index}]")
+        for index, item in enumerate(
+            _sequence(data.get("evidence_requirements", []), "evidence_requirements")
+        )
+    )
+    metadata = data.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise QueryPlanFormatError("metadata must be a JSON object")
+
+    return QueryPlan(
+        base_table=base_table,
+        joins=tuple(joins),
+        selected_columns=selected_columns,
+        filters=tuple(filters),
+        group_by=group_by,
+        aggregations=tuple(aggregations),
+        calculations=tuple(calculations),
+        sort=tuple(sort),
+        limit=limit,
+        time_range=time_range,
+        business_rules=business_rules,
+        output_type=output_type,
+        evidence_requirements=evidence_requirements,
+        metadata=metadata,
+    )

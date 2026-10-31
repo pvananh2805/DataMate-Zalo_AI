@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -6,10 +7,15 @@ import pytest
 from datamate.pipeline import (
     execute_and_log_business_plan,
     execute_business_plan,
+    execute_question_and_log,
     table_identifier,
 )
 from datamate.data_loader import BusinessDataLoader
 from datamate.normalization import ColumnCoercion
+from datamate.question_understanding import (
+    JsonPlanAdapter,
+    QuestionUnderstandingError,
+)
 from datamate.query_executor import QueryExecutionError
 from datamate.query_plan import (
     Aggregation,
@@ -194,6 +200,73 @@ def test_pipeline_logs_success_and_rejects_logs_inside_input_root(tmp_path: Path
             log_path=input_root / "runs.jsonl",
             input_root=input_root,
         )
+
+
+def test_question_to_plan_to_answer_is_integrated_and_logged(tmp_path: Path) -> None:
+    input_root = tmp_path / "input"
+    business = _business_database(input_root)
+    table = next(
+        table for table in BusinessDataLoader(business).discover() if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    generated_plan = {
+        "base_table": table_id,
+        "aggregations": [
+            {
+                "function": "sum",
+                "column": {"table": table_id, "column": "amount"},
+                "alias": "total",
+            }
+        ],
+        "output_type": "number",
+    }
+    planner = JsonPlanAdapter(
+        lambda prompt: json.dumps(generated_plan),
+        model_name="local-stub",
+    )
+    log_path = tmp_path / "logs" / "question.jsonl"
+
+    result = execute_question_and_log(
+        business,
+        "Tổng doanh thu là bao nhiêu?",
+        planner,
+        question_id="q-003",
+        business_id="biz-test",
+        as_of_date="2026-01-31",
+        log_path=log_path,
+        input_root=input_root,
+    )
+
+    (record,) = read_run_records(log_path)
+    assert result.answer.value == 20
+    assert record["model"] == "local-stub"
+    assert record["input"]["metadata"]["as_of_date"] == "2026-01-31"
+    assert record["query_plan"]["base_table"] == table_id
+
+
+def test_question_planning_failure_is_recorded_without_a_fake_plan(
+    tmp_path: Path,
+) -> None:
+    input_root = tmp_path / "input"
+    business = _business_database(input_root)
+    log_path = tmp_path / "logs" / "question-failure.jsonl"
+
+    with pytest.raises(QuestionUnderstandingError, match="Generated query plan is invalid"):
+        execute_question_and_log(
+            business,
+            "Câu hỏi không thể lập kế hoạch",
+            JsonPlanAdapter(lambda _: "not JSON", model_name="local-stub"),
+            question_id="q-bad-plan",
+            business_id="biz-test",
+            as_of_date=None,
+            log_path=log_path,
+            input_root=input_root,
+        )
+
+    (record,) = read_run_records(log_path)
+    assert record["query_plan"] is None
+    assert record["execution_trace"] is None
+    assert "QuestionUnderstandingError" in record["error"]
 
 
 def test_pipeline_records_plan_validation_failures(tmp_path: Path) -> None:

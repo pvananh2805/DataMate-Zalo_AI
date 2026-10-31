@@ -19,6 +19,11 @@ from .normalization import (
     ValueNormalizationError,
     normalize_rows,
 )
+from .question_understanding import (
+    QueryPlanner,
+    QuestionContext,
+    QuestionUnderstandingError,
+)
 from .query_executor import ExecutionResult, QueryExecutionError, execute_query_plan
 from .query_plan import ColumnRef, PlanValidationError, QueryPlan
 from .run_logging import RunRecord, append_run_record, validate_log_destination
@@ -257,6 +262,91 @@ def execute_and_log_business_plan(
             execution=result.execution.trace,
             answer=result.answer,
             input_metadata=_log_metadata(input_metadata, column_coercions),
+        ),
+        forbidden_roots=(input_root,),
+    )
+    return result
+
+
+def execute_question_and_log(
+    business_dir: Path | str,
+    question: str,
+    planner: QueryPlanner,
+    *,
+    question_id: str,
+    business_id: str,
+    as_of_date: str | None,
+    log_path: Path | str,
+    input_root: Path | str,
+    business_rules: tuple[str, ...] = (),
+    input_metadata: dict[str, object] | None = None,
+    column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
+    max_join_rows: int = 100_000,
+    max_groups: int = 100_000,
+    max_result_rows: int = 10_000,
+) -> PipelineResult:
+    """Run question planning, deterministic execution, validation, and logging."""
+    validate_log_destination(log_path, forbidden_roots=(input_root,))
+    started = time.perf_counter()
+    plan: QueryPlan | None = None
+    metadata = dict(input_metadata or {})
+    if as_of_date is not None:
+        metadata["as_of_date"] = as_of_date
+    metadata = _log_metadata(metadata, column_coercions)
+    try:
+        schema = discover_business_schema(business_dir)
+        context = QuestionContext(
+            schema=schema.columns,
+            as_of_date=as_of_date,
+            business_rules=business_rules,
+        )
+        plan = planner.create_plan(question, context)
+        result = execute_business_plan(
+            business_dir,
+            plan,
+            max_join_rows=max_join_rows,
+            max_groups=max_groups,
+            max_result_rows=max_result_rows,
+            column_coercions=column_coercions,
+        )
+    except (
+        DataLoadError,
+        PlanValidationError,
+        QueryExecutionError,
+        ValueNormalizationError,
+        PipelineError,
+        AnswerValidationError,
+        QuestionUnderstandingError,
+        ValueError,
+    ) as exc:
+        append_run_record(
+            log_path,
+            RunRecord(
+                question_id=question_id,
+                business_id=business_id,
+                question=question,
+                model=planner.model_name,
+                elapsed_ms=(time.perf_counter() - started) * 1000,
+                plan=plan,
+                error=f"{type(exc).__name__}: {exc}",
+                input_metadata=metadata,
+            ),
+            forbidden_roots=(input_root,),
+        )
+        raise
+
+    append_run_record(
+        log_path,
+        RunRecord(
+            question_id=question_id,
+            business_id=business_id,
+            question=question,
+            model=planner.model_name,
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            plan=plan,
+            execution=result.execution.trace,
+            answer=result.answer,
+            input_metadata=metadata,
         ),
         forbidden_roots=(input_root,),
     )
