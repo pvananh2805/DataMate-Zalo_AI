@@ -5,6 +5,7 @@ from datamate.query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupFilter,
     Join,
     PlanValidationError,
     QueryPlan,
@@ -159,6 +160,33 @@ def test_count_distinct_requires_a_valid_key_column() -> None:
 
     with pytest.raises(PlanValidationError, match="count_distinct requires a column"):
         validate_query_plan(plan, CATALOG)
+
+
+def test_group_count_requires_valid_aggregate_filter_and_numeric_output() -> None:
+    orders = "orders.csv::orders"
+    valid_plan = QueryPlan(
+        base_table=orders,
+        group_by=(ColumnRef(orders, "customer_id"),),
+        aggregations=(Aggregation("count", None, "orders"),),
+        group_filters=(GroupFilter("orders", "gte", 2),),
+        count_groups=True,
+        output_type="number",
+    )
+    validate_query_plan(valid_plan, CATALOG)
+
+    invalid_plan = QueryPlan(
+        base_table=orders,
+        group_by=(ColumnRef(orders, "customer_id"),),
+        group_filters=(GroupFilter("missing", "gte", True),),
+        count_groups=True,
+        output_type="string",
+    )
+    with pytest.raises(PlanValidationError) as error:
+        validate_query_plan(invalid_plan, CATALOG)
+
+    assert any("unknown aggregate alias" in issue for issue in error.value.issues)
+    assert any("finite number" in issue for issue in error.value.issues)
+    assert any("requires number output" in issue for issue in error.value.issues)
 
 
 def test_plan_rejects_unknown_time_bucket_columns_and_granularities() -> None:

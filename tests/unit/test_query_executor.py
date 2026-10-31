@@ -9,6 +9,7 @@ from datamate.query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupFilter,
     Join,
     QueryPlan,
     Sort,
@@ -94,6 +95,65 @@ def test_count_distinct_counts_non_null_business_keys_once() -> None:
     )
 
     assert result.rows == ({"order_count": 2},)
+
+
+def test_group_filters_count_distinct_groups_meeting_threshold() -> None:
+    table = "order_lines"
+    product = ColumnRef(table, "product")
+    order_id = ColumnRef(table, "order_id")
+    plan = QueryPlan(
+        base_table=table,
+        group_by=(product,),
+        group_filters=(GroupFilter("orders", "gte", 2),),
+        aggregations=(Aggregation("count_distinct", order_id, "orders"),),
+        count_groups=True,
+        output_type="number",
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("product", "order_id")},
+        sources={
+            table: [
+                ("A", "O-1"),
+                ("A", "O-1"),
+                ("A", "O-2"),
+                ("B", "O-1"),
+                ("B", "O-2"),
+                ("C", "O-3"),
+            ]
+        },
+    )
+
+    assert result.rows == ({"group_count": 2},)
+    assert result.trace.group_count == 3
+
+
+def test_group_filter_compares_decimal_metric_to_json_float_exactly() -> None:
+    table = "sales"
+    product = ColumnRef(table, "product")
+    amount = ColumnRef(table, "amount")
+    plan = QueryPlan(
+        base_table=table,
+        group_by=(product,),
+        group_filters=(GroupFilter("average", "gte", 1.1),),
+        aggregations=(Aggregation("avg", amount, "average"),),
+        count_groups=True,
+        output_type="number",
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("product", "amount")},
+        sources={
+            table: [
+                ("boundary", Decimal("1.1")),
+                ("below", Decimal("1.099")),
+            ]
+        },
+    )
+
+    assert result.rows == ({"group_count": 1},)
 
 
 def test_count_distinct_is_bounded_and_reports_resource_limit() -> None:

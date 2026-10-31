@@ -23,6 +23,7 @@ from datamate.query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupFilter,
     PlanValidationError,
     QueryPlan,
     Sort,
@@ -473,6 +474,83 @@ def test_pipeline_revenue_excludes_cancelled_and_returned_orders(
 
     assert result.answer.value == 35
     assert result.answer.status == "answered"
+
+
+def test_pipeline_counts_groups_meeting_distinct_order_threshold(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "threshold-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE sales "
+            "(product TEXT, order_id TEXT, quantity INTEGER, line_total INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?, ?, ?)",
+            [
+                ("A", "O-1", 1, 20),
+                ("A", "O-1", 2, 30),
+                ("A", "O-2", 1, 25),
+                ("B", "O-1", 1, 10),
+                ("B", "O-2", 1, 15),
+                ("C", "O-3", 1, 60),
+            ],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    product = ColumnRef(table_id, "product")
+    order_id = ColumnRef(table_id, "order_id")
+    plan = QueryPlan(
+        base_table=table_id,
+        group_by=(product,),
+        group_filters=(GroupFilter("orders", "gte", 2),),
+        aggregations=(Aggregation("count_distinct", order_id, "orders"),),
+        count_groups=True,
+        output_type="number",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.value == 2
+    assert result.answer.status == "answered"
+    assert result.execution.trace.group_count == 3
+
+    order_id = ColumnRef(table_id, "order_id")
+    line_total = ColumnRef(table_id, "line_total")
+    qualifying_orders_plan = QueryPlan(
+        base_table=table_id,
+        group_by=(order_id,),
+        group_filters=(GroupFilter("revenue", "gte", 60),),
+        aggregations=(Aggregation("sum", line_total, "revenue"),),
+        count_groups=True,
+        output_type="number",
+    )
+    qualifying_orders = execute_business_plan(
+        business,
+        qualifying_orders_plan,
+    )
+
+    assert qualifying_orders.answer.value == 2
+    assert qualifying_orders.answer.status == "answered"
+
+    no_match_plan = QueryPlan(
+        base_table=table_id,
+        filters=(Filter(ColumnRef(table_id, "quantity"), "gt", 10),),
+        group_by=(product,),
+        group_filters=(GroupFilter("orders", "gte", 2),),
+        aggregations=(Aggregation("count_distinct", order_id, "orders"),),
+        count_groups=True,
+        output_type="number",
+    )
+    no_match_result = execute_business_plan(business, no_match_plan)
+
+    assert no_match_result.answer.value == 0
+    assert no_match_result.answer.status == "answered"
 
 
 def test_table_output_hides_grouping_key_used_only_for_tie_breaks(

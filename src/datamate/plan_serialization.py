@@ -11,6 +11,7 @@ from .query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupFilter,
     Join,
     QueryPlan,
     Sort,
@@ -128,8 +129,10 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         "selected_columns",
         "filters",
         "group_by",
+        "group_filters",
         "aggregations",
         "calculations",
+        "count_groups",
         "sort",
         "limit",
         "time_range",
@@ -168,6 +171,21 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         _column_ref(item, f"group_by[{index}]")
         for index, item in enumerate(_sequence(data.get("group_by", []), "group_by"))
     )
+    group_filters = []
+    for index, item in enumerate(
+        _sequence(data.get("group_filters", []), "group_filters")
+    ):
+        context = f"group_filters[{index}]"
+        group_filter = _object(item, context, {"alias", "operator", "value"})
+        group_filters.append(
+            GroupFilter(
+                alias=_string(group_filter.get("alias"), f"{context}.alias"),
+                operator=_string(
+                    group_filter.get("operator"), f"{context}.operator"
+                ),
+                value=group_filter.get("value"),
+            )
+        )
     aggregations = []
     for index, item in enumerate(
         _sequence(data.get("aggregations", []), "aggregations")
@@ -296,8 +314,10 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         selected_columns=selected_columns,
         filters=tuple(filters),
         group_by=group_by,
+        group_filters=tuple(group_filters),
         aggregations=tuple(aggregations),
         calculations=tuple(calculations),
+        count_groups=_boolean(data.get("count_groups", False), "count_groups"),
         sort=tuple(sort),
         limit=limit,
         time_range=time_range,

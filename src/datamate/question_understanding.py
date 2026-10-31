@@ -117,10 +117,13 @@ def build_planning_prompt(question: str, context: QuestionContext) -> str:
         "dẫn. Mỗi aggregation có thể có filters/time_range riêng để tính cùng một "
         "chỉ tiêu ở các kỳ khác nhau; không dùng time_range toàn plan để lọc mất "
         "một kỳ cần so sánh. Có thể group theo cột thô hoặc time_buckets với "
-        "granularity day/week/month/quarter/year; tuần bắt đầu thứ Hai. QueryPlan "
-        "gồm base_table, joins, selected_columns, filters, group_by, time_buckets, "
-        "aggregations, calculations, sort, limit, time_range, business_rules, "
-        "output_type, evidence_requirements, metadata. selected_columns xác định "
+        "granularity day/week/month/quarter/year; tuần bắt đầu thứ Hai. "
+        "group_filters lọc từng nhóm theo alias aggregation/calculation với điều "
+        "kiện số; dùng count_groups=true và output_type number khi câu hỏi cần "
+        "đếm số nhóm đạt ngưỡng, không đếm số dòng nguồn. QueryPlan gồm base_table, "
+        "joins, selected_columns, filters, group_by, group_filters, time_buckets, "
+        "aggregations, calculations, count_groups, sort, limit, time_range, "
+        "business_rules, output_type, evidence_requirements, metadata. selected_columns xác định "
         "các cột đối tượng được xuất; group_by có thể thêm mã làm khóa phụ mà không "
         "đưa mã đó vào selected_columns. Với xếp hạng, sort theo chỉ tiêu giảm dần, "
         "sau đó theo mã tăng dần (nếu có mã), nếu không thì theo tên tăng dần. Với "
@@ -197,8 +200,10 @@ def validate_abstention_plan(
             plan.selected_columns,
             plan.filters,
             plan.group_by,
+            plan.group_filters,
             plan.aggregations,
             plan.calculations,
+            plan.count_groups,
             plan.sort,
             plan.limit is not None,
             plan.time_range is not None,

@@ -68,6 +68,8 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
                 "alias": "month",
             }
         ],
+        "group_filters": [{"alias": "total", "operator": "gte", "value": 20}],
+        "count_groups": True,
         "metadata": {"reason": "monthly total"},
     }
 
@@ -81,6 +83,8 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert aggregation.time_range.start == "2025-12-01"
     assert aggregation.filters[0].value == "completed"
     assert plan.time_buckets[0].granularity == "month"
+    assert plan.group_filters[0].alias == "total"
+    assert plan.count_groups is True
     assert plan.metadata["reason"] == "monthly total"
 
 
@@ -124,6 +128,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
     assert "count_distinct" in prompt
+    assert "count_groups=true" in prompt
     assert "mã tăng dần" in prompt
 
 

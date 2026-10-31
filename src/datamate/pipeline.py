@@ -73,6 +73,10 @@ def _answer_value(
     answer_type: str,
     plan: QueryPlan,
 ) -> object:
+    if plan.count_groups:
+        if len(result.rows) != 1 or "group_count" not in result.rows[0]:
+            raise PipelineError("group-count result is unavailable")
+        return result.rows[0]["group_count"]
     if answer_type == "table":
         rows = list(result.rows)
         if plan.selected_columns:
@@ -272,6 +276,8 @@ def execute_business_plan(
 
     if outside_coverage:
         value = None
+    elif plan.count_groups:
+        value = _answer_value(execution, plan.output_type, plan)
     elif execution.trace.filtered_rows == 0:
         has_scalar_count = (
             plan.output_type == "number"

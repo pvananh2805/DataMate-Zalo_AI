@@ -12,6 +12,7 @@ from .query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupFilter,
     Join,
     QueryPlan,
     TimeBucket,
@@ -74,9 +75,7 @@ def _row_value(
     return row[index]
 
 
-def _matches(value: object, condition: Filter) -> bool:
-    op = condition.operator
-    expected = condition.value
+def _matches_value(value: object, op: str, expected: object) -> bool:
     if op == "is_null":
         return value is None
     if op == "not_null":
@@ -113,6 +112,21 @@ def _matches(value: object, condition: Filter) -> bool:
             f"Incompatible filter value types for operator {op}"
         ) from exc
     raise QueryExecutionError(f"Unsupported filter operator: {op}")
+
+
+def _matches(value: object, condition: Filter) -> bool:
+    return _matches_value(value, condition.operator, condition.value)
+
+
+def _matches_group_filter(row: Mapping[str, object], condition: GroupFilter) -> bool:
+    value = row[condition.alias]
+    if value is None:
+        return False
+    return _matches_value(
+        _to_decimal(value, alias=condition.alias),
+        condition.operator,
+        _to_decimal(condition.value, alias=condition.alias),
+    )
 
 
 def _source_day(value: object) -> date | None:
@@ -689,6 +703,17 @@ def execute_query_plan(
             max_distinct_values=max_distinct_values,
         )
         _calculate(rows, plan.calculations)
+        if plan.group_filters:
+            rows = [
+                row
+                for row in rows
+                if all(
+                    _matches_group_filter(row, group_filter)
+                    for group_filter in plan.group_filters
+                )
+            ]
+        if plan.count_groups:
+            rows = [{"group_count": len(rows)}]
     else:
         rows = []
         group_count = 0

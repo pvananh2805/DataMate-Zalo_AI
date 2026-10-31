@@ -108,6 +108,15 @@ class Aggregation:
 
 
 @dataclass(frozen=True)
+class GroupFilter:
+    """A numeric predicate applied to an aggregate or calculation per group."""
+
+    alias: str
+    operator: Literal["eq", "ne", "lt", "lte", "gt", "gte"]
+    value: object
+
+
+@dataclass(frozen=True)
 class Calculation:
     """A fixed arithmetic operation over named aggregate results."""
 
@@ -149,8 +158,10 @@ class QueryPlan:
     selected_columns: tuple[ColumnRef, ...] = ()
     filters: tuple[Filter, ...] = ()
     group_by: tuple[ColumnRef, ...] = ()
+    group_filters: tuple[GroupFilter, ...] = ()
     aggregations: tuple[Aggregation, ...] = ()
     calculations: tuple[Calculation, ...] = ()
+    count_groups: bool = False
     sort: tuple[Sort, ...] = ()
     limit: int | None = None
     time_range: TimeRange | None = None
@@ -305,8 +316,44 @@ def validate_query_plan(
                 "or calculation aliases"
             )
         if not calculation.alias or calculation.alias in aliases:
-            issues.append(f"calculation alias is empty or duplicated: {calculation.alias!r}")
+            issues.append(
+                f"calculation alias is empty or duplicated: {calculation.alias!r}"
+            )
         aliases.add(calculation.alias)
+
+    group_filter_aliases = {item.alias for item in plan.aggregations} | {
+        item.alias for item in plan.calculations
+    }
+    for group_filter in plan.group_filters:
+        if group_filter.alias not in group_filter_aliases:
+            issues.append(
+                f"group filter references unknown aggregate alias: {group_filter.alias}"
+            )
+        if group_filter.operator not in {"eq", "ne", "lt", "lte", "gt", "gte"}:
+            issues.append(
+                f"unsupported group filter operator: {group_filter.operator}"
+            )
+        value = group_filter.value
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float, Decimal))
+            or not _safe_filter_scalar(value)
+        ):
+            issues.append("group filter value must be a finite number")
+    if plan.group_filters and not (plan.group_by or plan.time_buckets):
+        issues.append("group filters require grouped rows")
+
+    if not isinstance(plan.count_groups, bool):
+        issues.append("count_groups must be a boolean")
+    elif plan.count_groups:
+        if not plan.group_by and not plan.time_buckets:
+            issues.append("count_groups requires grouped rows")
+        if plan.output_type != "number":
+            issues.append("count_groups requires number output")
+        if plan.selected_columns:
+            issues.append("count_groups cannot select output columns")
+        if plan.sort or plan.limit is not None:
+            issues.append("count_groups cannot use sort or limit")
 
     for item in plan.sort:
         if item.direction not in {"asc", "desc"}:
