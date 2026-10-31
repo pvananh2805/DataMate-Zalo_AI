@@ -161,7 +161,7 @@ def _is_submission_table(value: object) -> bool:
     rows = value["rows"]
     return (
         isinstance(columns, list)
-        and all(isinstance(column, str) for column in columns)
+        and all(isinstance(column, str) and column for column in columns)
         and len(set(columns)) == len(columns)
         and isinstance(rows, list)
         and all(
@@ -202,6 +202,10 @@ def _load_gold(connection: sqlite3.Connection, source: Path) -> tuple[int, int, 
             context = f"{source}:{line_number}"
             question_id = _required_id(record, "id", context)
             answer_type = record.get("type")
+            if answer_type == "table" and not _is_submission_table(
+                record.get("answer")
+            ):
+                raise EvaluationError(f"{context}: table answer has an invalid shape")
             answer_value = _canonical_value(answer_type, record.get("answer"))
             aliases = record.get("alias", [])
             if not isinstance(aliases, list):
@@ -231,6 +235,98 @@ def _load_gold(connection: sqlite3.Connection, source: Path) -> tuple[int, int, 
     return count, string_alias_count, string_alias_questions
 
 
+def _plan_table_columns(plan: object) -> list[str]:
+    if not isinstance(plan, dict):
+        return []
+    aggregations = plan.get("aggregations", [])
+    calculations = plan.get("calculations", [])
+    group_by = plan.get("group_by", [])
+    selected = plan.get("selected_columns", [])
+    if not all(
+        isinstance(items, list)
+        for items in (aggregations, calculations, group_by, selected)
+    ):
+        return []
+    references = (
+        group_by
+        if aggregations or calculations or group_by
+        else selected
+    )
+    columns = [
+        f"{item['table']}.{item['column']}"
+        for item in references
+        if isinstance(item, dict)
+        and isinstance(item.get("table"), str)
+        and isinstance(item.get("column"), str)
+    ]
+    columns.extend(
+        item["alias"]
+        for item in [*aggregations, *calculations]
+        if isinstance(item, dict) and isinstance(item.get("alias"), str)
+    )
+    return columns
+
+
+def _normalize_logged_table(value: object, plan: object) -> object:
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        return value
+    if value:
+        columns = list(value[0])
+        if any(set(row) != set(columns) for row in value):
+            return value
+    else:
+        columns = _plan_table_columns(plan)
+    return {
+        "columns": columns,
+        "rows": [[row[column] for column in columns] for row in value],
+    }
+
+
+def _table_equal(
+    gold: object,
+    predicted: object,
+    *,
+    allow_numeric_strings: bool,
+) -> bool:
+    if not _is_submission_table(gold) or not _is_submission_table(predicted):
+        return False
+    gold_columns = gold["columns"]
+    predicted_columns = predicted["columns"]
+    if len(gold_columns) != len(predicted_columns):
+        return False
+    if set(gold_columns) == set(predicted_columns):
+        predicted_indexes = {
+            column: index for index, column in enumerate(predicted_columns)
+        }
+        column_indexes = [predicted_indexes[column] for column in gold_columns]
+    else:
+        column_indexes = list(range(len(gold_columns)))
+
+    unmatched_rows = list(predicted["rows"])
+    if len(gold["rows"]) != len(unmatched_rows):
+        return False
+    for gold_row in gold["rows"]:
+        match_index = next(
+            (
+                index
+                for index, predicted_row in enumerate(unmatched_rows)
+                if all(
+                    _structured_equal(
+                        gold_value,
+                        predicted_row[column_indexes[position]],
+                        allow_numeric_strings=allow_numeric_strings,
+                    )
+                    for position, gold_value in enumerate(gold_row)
+                )
+            ),
+            None,
+        )
+        if match_index is None:
+            return False
+        unmatched_rows.pop(match_index)
+    return not unmatched_rows
+
+
 def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
     count = 0
     with source.open("r", encoding="utf-8-sig") as stream:
@@ -253,6 +349,11 @@ def _load_predictions(connection: sqlite3.Connection, source: Path) -> int:
             )
             if internal_log:
                 value = nested.get("value")
+                if answer_type == "table":
+                    value = _normalize_logged_table(
+                        value,
+                        record.get("query_plan"),
+                    )
             else:
                 value = nested
             valid = 1
@@ -519,7 +620,8 @@ def _aggregate_report(
         "strict_local_reward_scope": (
             "Applies +1/-1/0 to local outcomes with provided string aliases and "
             "case/whitespace/punctuation normalization. List/table comparison "
-            "rules are incomplete; this is not the official reward or aggregate PA."
+            "rules and list aliases are incomplete; this is not the official "
+            "reward or aggregate PA."
         ),
         "answer_type_matches": type_matches,
         "answer_type_accuracy": type_matches / gold_count if gold_count else 0.0,
@@ -561,7 +663,18 @@ def _same_answer_value(
             for value in [gold, *aliases]
             if isinstance(value, str)
         }
-    if answer_type not in {"list", "table"}:
+    if answer_type == "table":
+        try:
+            gold = json.loads(gold_value)
+            predicted = json.loads(predicted_value)
+        except json.JSONDecodeError:
+            return False
+        return _table_equal(
+            gold,
+            predicted,
+            allow_numeric_strings=allow_numeric_strings,
+        )
+    if answer_type != "list":
         return gold_value == predicted_value
     try:
         gold = json.loads(gold_value)

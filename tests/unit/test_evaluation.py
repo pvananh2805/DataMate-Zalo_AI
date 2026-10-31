@@ -352,3 +352,102 @@ def test_string_normalization_does_not_remove_vietnamese_diacritics(
 
     assert report["exact_matches"] == 0
     assert report["incorrect_predictions"] == 1
+
+
+def test_table_evaluation_ignores_row_order_and_matches_columns_by_name(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["name", "revenue"],
+                    "rows": [["Trà", 10], ["Cà phê", 20]],
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["revenue", "name"],
+                    "rows": [[20, "Cà phê"], [10, "Trà"]],
+                },
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+
+
+def test_table_evaluation_normalizes_internal_run_log_rows(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "runs.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["name", "revenue"],
+                    "rows": [["Trà", 10]],
+                },
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "question_id": "q1",
+                "query_plan": {
+                    "base_table": "sales",
+                    "group_by": [
+                        {"table": "sales", "column": "name"},
+                    ],
+                    "aggregations": [
+                        {
+                            "function": "sum",
+                            "column": {"table": "sales", "column": "amount"},
+                            "alias": "revenue",
+                        }
+                    ],
+                },
+                "answer": {
+                    "answer_type": "table",
+                    "value": [{"sales.name": "Trà", "revenue": "10.00"}],
+                    "status": "answered",
+                },
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
