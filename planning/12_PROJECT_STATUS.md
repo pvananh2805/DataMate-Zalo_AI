@@ -1,7 +1,7 @@
 # Trạng thái dự án DataMate
 
 **Cập nhật:** 2026-10-31
-**Mốc code đã xác minh trước thay đổi hiện tại:** `cd18172` (thêm replay QueryPlan xác định; đã đẩy lên repository riêng).
+**Mốc code đã xác minh trước thay đổi hiện tại:** `10c7389` (xác minh Regulations chung; các thay đổi đã đẩy lên repository riêng).
 
 ## Đã triển khai và kiểm chứng
 
@@ -45,7 +45,7 @@
 | Question understanding tiếng Việt | Đã có adapter planner, backend Transformers local-only và luồng ambiguity/abstain; chưa chọn/kiểm chứng model đủ điều kiện, chưa chạy checkpoint thật hoặc benchmark ngữ nghĩa. |
 | Chuẩn hóa dữ liệu | Đã có coercion có kiểm soát nhưng chưa có cấu hình policy được xác nhận cho từng bảng/cột training; cần profile-assisted policy authoring, kiểm tra dữ liệu đầy đủ và xử lý header Excel cần review. |
 | Query planning/executor hoàn chỉnh | Plan validator và executor hiện có là lõi thử nghiệm; business-rule tags không hỗ trợ bị từ chối thay vì chạy im lặng, nhưng rulebook vẫn chưa được thực thi tự động, chưa hỗ trợ so sánh hai kỳ và chứng cứ đầu ra chưa đủ để tái kiểm chứng mọi phép tính. |
-| Model selection/offline inference | Backend và CLI offline đã chuẩn bị nhưng chưa tải model; chưa benchmark parameter count thực, ngày phát hành, license, tiếng Việt, tốc độ/RAM và chất lượng QueryPlan. |
+| Model selection/offline inference | Backend và CLI offline đã chuẩn bị nhưng chưa tải model; chưa benchmark parameter count thực, ngày phát hành, license của đúng checkpoint, tiếng Việt, tốc độ/RAM và chất lượng QueryPlan. Regulations mục 4.5 còn yêu cầu thư viện/mã nguồn mở có OSI license không hạn chế sử dụng thương mại (trừ chấp thuận bằng văn bản). |
 | Training/fine-tuning | Có pipeline annotation thủ công/group split, script offline GPU full/LoRA, kiểm tra CPU guard/token masking và merge/export; chưa có annotation thực, model/checkpoint được chọn, dependency GPU, lần chạy training hoặc đánh giá chất lượng sau fine-tune. QLoRA chưa triển khai. |
 | Evaluation | Đã có evaluator local với string/list/table aliases và diagnostic reward sum; chưa chạy trên model/validation thực, chưa bao phủ đầy đủ list ranking/tie-break rules, chưa xác minh phép tổng hợp PA chính thức và không công bố điểm PA. |
 | Logging/reproducibility | Có JSONL log và replay xác định QueryPlan đã ghi, đối chiếu answer/trace; chưa tái chạy planner/model, ghi checksum dữ liệu, dependency lock hoặc checkpoint revision. |
