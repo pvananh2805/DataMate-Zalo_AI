@@ -38,6 +38,7 @@ class PipelineError(RuntimeError):
 _DEFAULT_MAX_JOIN_ROWS = 100_000
 _DEFAULT_MAX_GROUPS = 100_000
 _DEFAULT_MAX_RESULT_ROWS = 10_000
+_DEFAULT_MAX_GROUP_EXCLUSIONS = 100_000
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,9 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
                     aggregation.unit_conversion.factor,
                 )
             )
+    for exclusion in plan.group_exclusions:
+        references.add(exclusion.key)
+        references.update(item.column for item in exclusion.filters)
     if plan.time_range is not None:
         references.add(plan.time_range.column)
     for join in plan.joins:
@@ -201,7 +205,7 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
     evidence: list[Evidence] = []
     filter_count = len(plan.filters) + sum(
         len(aggregation.filters) for aggregation in plan.aggregations
-    )
+    ) + sum(len(exclusion.filters) for exclusion in plan.group_exclusions)
     has_time_range = plan.time_range is not None or any(
         aggregation.time_range is not None for aggregation in plan.aggregations
     )
@@ -216,6 +220,10 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
         )
         if has_time_bucket:
             filter_summary += "; time_bucket=yes"
+        if plan.group_exclusions:
+            filter_summary += (
+                f"; excluded_groups={len(plan.group_exclusions)}"
+            )
         conversion_targets = sorted(
             {
                 aggregation.unit_conversion.target_unit or "product_base_unit"
@@ -246,6 +254,7 @@ def execute_business_plan(
     max_join_rows: int = _DEFAULT_MAX_JOIN_ROWS,
     max_groups: int = _DEFAULT_MAX_GROUPS,
     max_result_rows: int = _DEFAULT_MAX_RESULT_ROWS,
+    max_group_exclusions: int = _DEFAULT_MAX_GROUP_EXCLUSIONS,
     column_coercions: Mapping[ColumnRef, ColumnCoercion] | None = None,
 ) -> PipelineResult:
     """Discover the local schema and execute a plan using only approved readers."""
@@ -283,10 +292,11 @@ def execute_business_plan(
         if identifier not in tables:
             continue
         table = tables[identifier]
-        sources[identifier] = normalize_rows(
+        policies = policies_by_table.get(identifier, {})
+        sources[identifier] = lambda table=table, policies=policies: normalize_rows(
             loader.iter_rows(table),
             table.columns,
-            policies_by_table.get(identifier, {}),
+            policies,
         )
     execution = execute_query_plan(
         plan,
@@ -295,6 +305,7 @@ def execute_business_plan(
         max_join_rows=max_join_rows,
         max_groups=max_groups,
         max_result_rows=max_result_rows,
+        max_group_exclusions=max_group_exclusions,
     )
 
     requested_ranges = [
@@ -438,6 +449,7 @@ def execute_and_log_business_plan(
                         "max_join_rows": _DEFAULT_MAX_JOIN_ROWS,
                         "max_groups": _DEFAULT_MAX_GROUPS,
                         "max_result_rows": _DEFAULT_MAX_RESULT_ROWS,
+                        "max_group_exclusions": _DEFAULT_MAX_GROUP_EXCLUSIONS,
                     },
                 ),
             ),
@@ -463,6 +475,7 @@ def execute_and_log_business_plan(
                     "max_join_rows": _DEFAULT_MAX_JOIN_ROWS,
                     "max_groups": _DEFAULT_MAX_GROUPS,
                     "max_result_rows": _DEFAULT_MAX_RESULT_ROWS,
+                    "max_group_exclusions": _DEFAULT_MAX_GROUP_EXCLUSIONS,
                 },
             ),
         ),
@@ -503,6 +516,7 @@ def execute_question_and_log(
         "max_join_rows": max_join_rows,
         "max_groups": max_groups,
         "max_result_rows": max_result_rows,
+        "max_group_exclusions": _DEFAULT_MAX_GROUP_EXCLUSIONS,
     }
     metadata = _log_metadata(
         metadata,

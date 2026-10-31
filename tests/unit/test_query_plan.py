@@ -5,6 +5,7 @@ from datamate.query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupExclusion,
     GroupFilter,
     Join,
     PlanValidationError,
@@ -223,6 +224,51 @@ def test_ratio_rounding_places_are_bounded_and_only_apply_to_ratio() -> None:
 
     assert any("integer from 0 to 12" in issue for issue in error.value.issues)
     assert any("only for ratio" in issue for issue in error.value.issues)
+
+
+def test_group_exclusion_requires_base_key_and_same_table_filters() -> None:
+    orders = "orders.csv::orders"
+    customers = "customers.xlsx::Customers"
+    plan = QueryPlan(
+        base_table=orders,
+        joins=(
+            Join(
+                ColumnRef(orders, "customer_id"),
+                ColumnRef(customers, "customer_id"),
+                kind="left",
+            ),
+        ),
+        aggregations=(Aggregation("sum", ColumnRef(orders, "amount"), "total"),),
+        group_exclusions=(
+            GroupExclusion(
+                key=ColumnRef(customers, "customer_id"),
+                filters=(Filter(ColumnRef(orders, "amount"), "lt", 0),),
+            ),
+        ),
+    )
+
+    with pytest.raises(PlanValidationError) as error:
+        validate_query_plan(plan, CATALOG)
+
+    assert any("key must belong to the base table" in issue for issue in error.value.issues)
+    assert any("filters must use the same table" in issue for issue in error.value.issues)
+
+
+def test_group_exclusion_requires_marker_filters() -> None:
+    orders = "orders.csv::orders"
+    plan = QueryPlan(
+        base_table=orders,
+        aggregations=(Aggregation("sum", ColumnRef(orders, "amount"), "total"),),
+        group_exclusions=(
+            GroupExclusion(key=ColumnRef(orders, "order_id"), filters=()),
+        ),
+    )
+
+    with pytest.raises(
+        PlanValidationError,
+        match="requires at least one source-row filter",
+    ):
+        validate_query_plan(plan, CATALOG)
 
 
 def test_unit_conversion_requires_sum_and_valid_columns() -> None:

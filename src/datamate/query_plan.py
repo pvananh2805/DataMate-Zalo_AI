@@ -129,6 +129,14 @@ class GroupFilter:
 
 
 @dataclass(frozen=True)
+class GroupExclusion:
+    """Exclude every row sharing a key when any source row matches the filters."""
+
+    key: ColumnRef
+    filters: tuple[Filter, ...]
+
+
+@dataclass(frozen=True)
 class Calculation:
     """A fixed arithmetic operation over named aggregate results."""
 
@@ -172,6 +180,7 @@ class QueryPlan:
     filters: tuple[Filter, ...] = ()
     group_by: tuple[ColumnRef, ...] = ()
     group_filters: tuple[GroupFilter, ...] = ()
+    group_exclusions: tuple[GroupExclusion, ...] = ()
     aggregations: tuple[Aggregation, ...] = ()
     calculations: tuple[Calculation, ...] = ()
     count_groups: bool = False
@@ -345,6 +354,23 @@ def validate_query_plan(
 
     for filter_item in plan.filters:
         check_filter(filter_item, "filter")
+
+    for index, exclusion in enumerate(plan.group_exclusions):
+        context = f"group exclusion {index}"
+        check_column(exclusion.key, context)
+        if exclusion.key.table != plan.base_table:
+            issues.append(
+                f"{context} key must belong to the base table so source rows "
+                "can be scanned without an ambiguous join"
+            )
+        if not exclusion.filters:
+            issues.append(f"{context} requires at least one source-row filter")
+        for filter_item in exclusion.filters:
+            check_filter(filter_item, context)
+            if filter_item.column.table != exclusion.key.table:
+                issues.append(
+                    f"{context} filters must use the same table as its group key"
+                )
 
     aliases: set[str] = set(bucket_aliases)
     for aggregation in plan.aggregations:

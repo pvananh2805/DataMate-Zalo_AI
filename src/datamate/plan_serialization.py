@@ -11,6 +11,7 @@ from .query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupExclusion,
     GroupFilter,
     Join,
     QueryPlan,
@@ -153,6 +154,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         "filters",
         "group_by",
         "group_filters",
+        "group_exclusions",
         "aggregations",
         "calculations",
         "count_groups",
@@ -266,6 +268,27 @@ def query_plan_from_dict(value: object) -> QueryPlan:
             )
         )
 
+    group_exclusions = []
+    for index, item in enumerate(
+        _sequence(data.get("group_exclusions", []), "group_exclusions")
+    ):
+        context = f"group_exclusions[{index}]"
+        exclusion = _object(item, context, {"key", "filters"})
+        group_exclusions.append(
+            GroupExclusion(
+                key=_column_ref(exclusion.get("key"), f"{context}.key"),
+                filters=tuple(
+                    _filter_from_data(filter_item, f"{context}.filters[{filter_index}]")
+                    for filter_index, filter_item in enumerate(
+                        _sequence(
+                            exclusion.get("filters", []),
+                            f"{context}.filters",
+                        )
+                    )
+                ),
+            )
+        )
+
     calculations = []
     for index, item in enumerate(
         _sequence(data.get("calculations", []), "calculations")
@@ -366,6 +389,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         filters=tuple(filters),
         group_by=group_by,
         group_filters=tuple(group_filters),
+        group_exclusions=tuple(group_exclusions),
         aggregations=tuple(aggregations),
         calculations=tuple(calculations),
         count_groups=_boolean(data.get("count_groups", False), "count_groups"),

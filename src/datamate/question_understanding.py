@@ -122,9 +122,10 @@ def build_planning_prompt(question: str, context: QuestionContext) -> str:
         "abstain thay vì tuyên bố đã áp dụng. Nếu tài liệu context là null thì "
         "không được tự giả định nội dung còn thiếu.\n"
         "Nếu rulebook yêu cầu loại toàn bộ đơn dựa trên một dòng hàng của đơn "
-        "(ví dụ đơn có trả hàng), không thay bằng việc chỉ lọc bỏ dòng đó. Chỉ "
-        "lập plan nếu có thể loại chính xác mọi dòng của đơn; nếu QueryPlan hiện "
-        "tại không biểu diễn được thì abstain.\n"
+        "(ví dụ đơn có trả hàng), dùng group_exclusions với mã đơn và điều kiện "
+        "trên dòng đánh dấu để loại mọi dòng của đơn; không thay bằng filter bỏ "
+        "riêng dòng đó. Nếu không có khóa nhóm tin cậy, hoặc QueryPlan không thể "
+        "biểu diễn chính xác quy tắc, phải abstain.\n"
         "Mọi mốc thời gian tương đối phải được quy đổi thành ngày ISO-8601 dựa trên "
         "as_of_date. Nếu không thể lập plan an toàn, không "
         "đoán tên cột hoặc dữ liệu; trả output_type 'unanswerable' hoặc 'abstain', "
@@ -138,7 +139,8 @@ def build_planning_prompt(question: str, context: QuestionContext) -> str:
         "group_filters lọc từng nhóm theo alias aggregation/calculation với điều "
         "kiện số; dùng count_groups=true và output_type number khi câu hỏi cần "
         "đếm số nhóm đạt ngưỡng, không đếm số dòng nguồn. QueryPlan gồm base_table, "
-        "joins, selected_columns, filters, group_by, group_filters, time_buckets, "
+        "joins, selected_columns, filters, group_by, group_filters, "
+        "group_exclusions, time_buckets, "
         "aggregations (có thể có unit_conversion), calculations, count_groups, "
         "sort, limit, time_range, "
         "business_rules, output_type, evidence_requirements, metadata. selected_columns xác định "
@@ -222,6 +224,7 @@ def validate_abstention_plan(
             plan.filters,
             plan.group_by,
             plan.group_filters,
+            plan.group_exclusions,
             plan.aggregations,
             plan.calculations,
             plan.count_groups,

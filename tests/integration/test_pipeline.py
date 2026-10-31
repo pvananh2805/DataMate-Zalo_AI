@@ -23,6 +23,7 @@ from datamate.query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupExclusion,
     GroupFilter,
     Join,
     PlanValidationError,
@@ -494,17 +495,18 @@ def test_pipeline_revenue_excludes_cancelled_and_returned_orders(
     with sqlite3.connect(business / "shop.sqlite") as connection:
         connection.execute(
             "CREATE TABLE order_lines "
-            "(order_id TEXT, status TEXT, order_date TEXT, line_total INTEGER)"
+            "(order_id TEXT, status TEXT, order_date TEXT, line_total INTEGER, "
+            "quantity INTEGER)"
         )
         connection.executemany(
-            "INSERT INTO order_lines VALUES (?, ?, ?, ?)",
+            "INSERT INTO order_lines VALUES (?, ?, ?, ?, ?)",
             [
-                ("O-1", "completed", "2026-01-01", 20),
-                ("O-1", "completed", "2026-01-01", 10),
-                ("O-2", "cancelled", "2026-01-02", 50),
-                ("O-3", "returned", "2026-01-03", 15),
-                ("O-3", "returned", "2026-01-03", 25),
-                ("O-4", "in_delivery", "2026-01-04", 5),
+                ("O-1", "completed", "2026-01-01", 20, 1),
+                ("O-1", "completed", "2026-01-01", 10, 1),
+                ("O-2", "cancelled", "2026-01-02", 50, 1),
+                ("O-3", "completed", "2026-01-03", 40, 2),
+                ("O-3", "completed", "2026-01-03", -40, -2),
+                ("O-4", "in_delivery", "2026-01-04", 5, 1),
             ],
         ),
     table = next(
@@ -516,19 +518,20 @@ def test_pipeline_revenue_excludes_cancelled_and_returned_orders(
     status = ColumnRef(table_id, "status")
     order_date = ColumnRef(table_id, "order_date")
     line_total = ColumnRef(table_id, "line_total")
+    quantity = ColumnRef(table_id, "quantity")
+    order_id = ColumnRef(table_id, "order_id")
     plan = QueryPlan(
         base_table=table_id,
         time_range=TimeRange(order_date, "2026-01-01", "2026-01-31"),
-        aggregations=(
-            Aggregation(
-                "sum",
-                line_total,
-                "revenue",
-                filters=(
-                    Filter(status, "ne", "cancelled"),
-                    Filter(status, "ne", "returned"),
-                ),
+        filters=(Filter(status, "ne", "cancelled"),),
+        group_exclusions=(
+            GroupExclusion(
+                key=order_id,
+                filters=(Filter(quantity, "lt", 0),),
             ),
+        ),
+        aggregations=(
+            Aggregation("sum", line_total, "revenue"),
         ),
         output_type="number",
     )
@@ -536,6 +539,9 @@ def test_pipeline_revenue_excludes_cancelled_and_returned_orders(
 
     assert result.answer.value == 35
     assert result.answer.status == "answered"
+    evidence = result.answer.evidence[0]
+    assert {"order_id", "quantity"} <= set(evidence.columns)
+    assert "excluded_groups=1" in evidence.filter_summary
 
 
 def test_pipeline_calculates_rounded_average_revenue_per_valid_order(

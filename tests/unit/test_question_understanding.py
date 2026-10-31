@@ -85,6 +85,18 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
             }
         ],
         "group_filters": [{"alias": "total", "operator": "gte", "value": 20}],
+        "group_exclusions": [
+            {
+                "key": {"table": TABLE, "column": "order_id"},
+                "filters": [
+                    {
+                        "column": {"table": TABLE, "column": "quantity"},
+                        "operator": "lt",
+                        "value": 0,
+                    }
+                ],
+            }
+        ],
         "count_groups": True,
         "metadata": {"reason": "monthly total"},
     }
@@ -103,6 +115,8 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert plan.calculations[0].rounding_places == 0
     assert plan.time_buckets[0].granularity == "month"
     assert plan.group_filters[0].alias == "total"
+    assert plan.group_exclusions[0].key.column == "order_id"
+    assert plan.group_exclusions[0].filters[0].operator == "lt"
     assert plan.count_groups is True
     assert plan.metadata["reason"] == "monthly total"
 
@@ -169,7 +183,8 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "amount tính bằng VND" in prompt
     assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
-    assert "không thay bằng việc chỉ lọc bỏ dòng đó" in prompt
+    assert "group_exclusions" in prompt
+    assert "không thay bằng filter bỏ riêng dòng đó" in prompt
     assert "count_distinct" in prompt
     assert "không AVG trực tiếp" in prompt
     assert "unit_conversion khai báo" in prompt

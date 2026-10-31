@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
@@ -22,7 +23,7 @@ from .query_plan import (
 )
 
 Row = Sequence[object]
-TableRows = Iterable[Row]
+TableRows = Iterable[Row] | Callable[[], Iterable[Row]]
 
 
 class QueryExecutionError(RuntimeError):
@@ -629,6 +630,7 @@ def execute_query_plan(
     max_groups: int = 100_000,
     max_result_rows: int = 10_000,
     max_distinct_values: int = 100_000,
+    max_group_exclusions: int = 100_000,
 ) -> ExecutionResult:
     """Run allow-listed operations over streamed rows without executing SQL/code."""
     for name, value in (
@@ -636,6 +638,7 @@ def execute_query_plan(
         ("max_groups", max_groups),
         ("max_result_rows", max_result_rows),
         ("max_distinct_values", max_distinct_values),
+        ("max_group_exclusions", max_group_exclusions),
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
@@ -675,6 +678,91 @@ def execute_query_plan(
         raise QueryExecutionError(
             f"Missing row sources for tables: {', '.join(sorted(missing_sources))}"
         )
+
+    opened_iterators: dict[str, Iterable[Row]] = {}
+
+    def source_rows(table: str) -> Iterable[Row]:
+        source = sources[table]
+        rows = source() if callable(source) else source
+        try:
+            iterator = iter(rows)
+        except TypeError as exc:
+            raise QueryExecutionError(
+                f"Row source for {table} is not iterable"
+            ) from exc
+        if opened_iterators.get(table) is iterator:
+            raise QueryExecutionError(
+                f"Row source for {table} must provide a fresh iterator when "
+                "group exclusions require a second pass"
+            )
+        opened_iterators[table] = iterator
+        return iterator
+
+    def is_excluded(row: Row) -> bool:
+        for key, excluded_keys in excluded_groups.items():
+            group_key = row[key_indexes[key]]
+            try:
+                if group_key in excluded_keys:
+                    return True
+            except TypeError as exc:
+                raise QueryExecutionError(
+                    "Group exclusion keys must be hashable scalars"
+                ) from exc
+        return False
+
+    excluded_groups: dict[ColumnRef, set[object]] = defaultdict(set)
+    key_indexes: dict[ColumnRef, int] = {}
+    if plan.group_exclusions:
+        key_indexes = {
+            exclusion.key: column_indexes[plan.base_table][exclusion.key.column]
+            for exclusion in plan.group_exclusions
+        }
+        exclusions_by_key: dict[ColumnRef, list[object]] = defaultdict(list)
+        for exclusion in plan.group_exclusions:
+            exclusions_by_key[exclusion.key].append(exclusion.filters)
+        excluded_group_count = 0
+        for row_number, raw_row in enumerate(
+            source_rows(plan.base_table),
+            start=1,
+        ):
+            row = tuple(raw_row)
+            if len(row) != len(schemas[plan.base_table]):
+                raise QueryExecutionError(
+                    f"Row width mismatch in {plan.base_table} at row {row_number}"
+                )
+            context = {plan.base_table: row}
+            for key, exclusion_filters in exclusions_by_key.items():
+                if not any(
+                    all(
+                        _matches(
+                            _row_value(context, column_indexes, item.column),
+                            item,
+                        )
+                        for item in filters
+                    )
+                    for filters in exclusion_filters
+                ):
+                    continue
+                group_key = row[key_indexes[key]]
+                if group_key is None:
+                    raise QueryExecutionError(
+                        "Cannot exclude a group when a matching source row has a "
+                        f"null key: {key.table}.{key.column}"
+                    )
+                try:
+                    excluded = excluded_groups[key]
+                    if group_key not in excluded:
+                        if excluded_group_count >= max_group_exclusions:
+                            raise QueryExecutionError(
+                                "Excluded group count exceeds configured limit "
+                                f"{max_group_exclusions}"
+                            )
+                        excluded.add(group_key)
+                        excluded_group_count += 1
+                except TypeError as exc:
+                    raise QueryExecutionError(
+                        "Group exclusion keys must be hashable scalars"
+                    ) from exc
 
     joined_tables = {plan.base_table}
     join_indexes: dict[str, dict[object, list[Row]]] = {}
@@ -722,7 +810,7 @@ def execute_query_plan(
             ) from exc
         index: dict[object, list[Row]] = defaultdict(list)
         row_count = 0
-        for row_count, raw_row in enumerate(sources[new_table], start=1):
+        for row_count, raw_row in enumerate(source_rows(new_table), start=1):
             row = tuple(raw_row)
             if len(row) != len(schema):
                 raise QueryExecutionError(
@@ -754,13 +842,18 @@ def execute_query_plan(
     def contexts() -> Iterable[dict[str, Row | None]]:
         nonlocal joined_row_count
         base_row_count = 0
-        for base_row_count, raw_row in enumerate(sources[plan.base_table], start=1):
+        for base_row_count, raw_row in enumerate(
+            source_rows(plan.base_table),
+            start=1,
+        ):
             row = tuple(raw_row)
             if len(row) != len(schemas[plan.base_table]):
                 raise QueryExecutionError(
                     f"Row width mismatch in {plan.base_table} at row {base_row_count}"
                 )
             record_time_coverage(plan.base_table, row)
+            if is_excluded(row):
+                continue
             current: list[dict[str, Row | None]] = [{plan.base_table: row}]
             for join in plan.joins:
                 new_table = (

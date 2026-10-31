@@ -9,6 +9,7 @@ from datamate.query_plan import (
     Calculation,
     ColumnRef,
     Filter,
+    GroupExclusion,
     GroupFilter,
     Join,
     QueryPlan,
@@ -96,6 +97,113 @@ def test_count_distinct_counts_non_null_business_keys_once() -> None:
     )
 
     assert result.rows == ({"order_count": 2},)
+
+
+def test_group_exclusion_drops_every_row_of_a_matching_group() -> None:
+    table = "order_lines"
+    order_id = ColumnRef(table, "order_id")
+    quantity = ColumnRef(table, "quantity")
+    revenue = ColumnRef(table, "revenue")
+    status = ColumnRef(table, "status")
+    plan = QueryPlan(
+        base_table=table,
+        filters=(Filter(status, "ne", "cancelled"),),
+        aggregations=(Aggregation("sum", revenue, "revenue"),),
+        group_exclusions=(
+            GroupExclusion(
+                key=order_id,
+                filters=(Filter(quantity, "lt", 0),),
+            ),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={
+            table: ("order_id", "quantity", "revenue", "status"),
+        },
+        sources={
+            table: [
+                ("A", 1, Decimal(20), "completed"),
+                ("A", 1, Decimal(10), "completed"),
+                ("B", 2, Decimal(40), "completed"),
+                ("B", -2, Decimal(-40), "completed"),
+                ("C", 1, Decimal(50), "cancelled"),
+                ("D", 1, Decimal(5), "in_delivery"),
+            ],
+        },
+    )
+
+    assert result.rows == ({"revenue": Decimal(35)},)
+    assert result.trace.filtered_rows == 3
+
+
+def test_group_exclusion_is_bounded_and_requires_replayable_sources() -> None:
+    table = "order_lines"
+    order_id = ColumnRef(table, "order_id")
+    quantity = ColumnRef(table, "quantity")
+    plan = QueryPlan(
+        base_table=table,
+        aggregations=(
+            Aggregation("count", None, "rows"),
+        ),
+        group_exclusions=(
+            GroupExclusion(
+                key=order_id,
+                filters=(Filter(quantity, "lt", 0),),
+            ),
+        ),
+    )
+    catalog = {table: ("order_id", "quantity")}
+    rows = [
+        ("A", -1),
+        ("B", -1),
+    ]
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="Excluded group count exceeds configured limit 1",
+    ):
+        execute_query_plan(
+            plan,
+            catalog=catalog,
+            sources={table: rows},
+            max_group_exclusions=1,
+        )
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="must provide a fresh iterator",
+    ):
+        execute_query_plan(
+            plan,
+            catalog=catalog,
+            sources={table: iter(rows)},
+        )
+
+
+def test_group_exclusion_rejects_marker_rows_without_group_keys() -> None:
+    table = "order_lines"
+    plan = QueryPlan(
+        base_table=table,
+        aggregations=(Aggregation("count", None, "rows"),),
+        group_exclusions=(
+            GroupExclusion(
+                key=ColumnRef(table, "order_id"),
+                filters=(Filter(ColumnRef(table, "quantity"), "lt", 0),),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="matching source row has a null key",
+    ):
+        execute_query_plan(
+            plan,
+            catalog={table: ("order_id", "quantity")},
+            sources={table: [(None, -1)]},
+        )
 
 
 def test_group_filters_count_distinct_groups_meeting_threshold() -> None:

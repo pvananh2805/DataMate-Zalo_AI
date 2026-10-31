@@ -21,7 +21,12 @@ from .query_plan import ColumnRef, PlanValidationError
 from .plan_serialization import QueryPlanFormatError, query_plan_from_dict
 from .run_logging import _json_default, iter_run_records
 
-_LIMIT_NAMES = {"max_join_rows", "max_groups", "max_result_rows"}
+_LIMIT_NAMES = {
+    "max_join_rows",
+    "max_groups",
+    "max_result_rows",
+    "max_group_exclusions",
+}
 _COERCION_FIELDS = {
     "kind",
     "decimal_separator",
