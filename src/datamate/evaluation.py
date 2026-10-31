@@ -726,9 +726,10 @@ def _numeric_equal(gold: object, predicted: object) -> bool:
     if (
         not math.isfinite(expected_float)
         or not math.isfinite(actual_float)
-        or expected_float == actual_float
     ):
         return False
+    if expected_float == actual_float:
+        return True
     tolerance = max(math.ulp(expected_float), math.ulp(actual_float))
     return abs(expected_float - actual_float) <= tolerance
 

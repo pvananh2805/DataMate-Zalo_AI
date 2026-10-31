@@ -51,6 +51,40 @@ def test_numeric_evaluation_ignores_only_one_ulp_float_error(
     assert report["exact_matches"] == expected_matches
 
 
+def test_internal_decimal_values_rounding_to_same_float_match(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "runs.jsonl"
+    _write_jsonl(
+        gold_path,
+        [{"id": "q1", "type": "number", "answer": 0.1}],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "id": "q1",
+                "answer": {
+                    "answer_type": "number",
+                    "value": "0.10000000000000001",
+                    "status": "answered",
+                },
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+
+
 def test_nested_numeric_answers_ignore_only_one_ulp_float_error(
     tmp_path: Path,
 ) -> None:
