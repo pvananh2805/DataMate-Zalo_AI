@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -59,13 +60,20 @@ def main() -> None:
     )
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--parameter-cap", type=int, default=15_000_000_000)
+    parser.add_argument("--generation-timeout-seconds", type=float)
     args = parser.parse_args()
+    if args.generation_timeout_seconds is not None and (
+        not math.isfinite(args.generation_timeout_seconds)
+        or args.generation_timeout_seconds <= 0
+    ):
+        parser.error("generation-timeout-seconds must be finite and positive")
 
     backend = LocalTransformersBackend(
         args.model_path,
         precision=args.precision,
         max_new_tokens=args.max_new_tokens,
         parameter_cap=args.parameter_cap,
+        generation_timeout_seconds=args.generation_timeout_seconds,
     )
     try:
         summary = run_manual_test(

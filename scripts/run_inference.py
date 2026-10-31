@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from datetime import date
 from pathlib import Path
@@ -75,6 +76,15 @@ def _safe_business_directory(root: Path, business_id: object) -> Path:
     return business_dir
 
 
+def _valid_generation_timeout(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _read_inference_config(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -98,6 +108,7 @@ def _read_inference_config(path: Path) -> dict[str, Any]:
         "precision",
         "max_new_tokens",
         "parameter_cap",
+        "generation_timeout_seconds",
     }
     unknown = set(payload) - path_fields - value_fields
     if unknown:
@@ -157,6 +168,13 @@ def _read_inference_config(path: Path) -> dict[str, Any]:
                 f"Configuration field {field} must be an integer {range_text}"
             )
         config[field] = value
+    generation_timeout_seconds = payload.get("generation_timeout_seconds")
+    if generation_timeout_seconds is not None:
+        if not _valid_generation_timeout(generation_timeout_seconds):
+            raise ValueError(
+                "Configuration generation_timeout_seconds must be finite and positive"
+            )
+    config["generation_timeout_seconds"] = generation_timeout_seconds
     return config
 
 
@@ -171,6 +189,7 @@ def _process_questions(
     calendar_path: Path | None,
     submission_writer: SubmissionWriter | None,
     default_as_of_date: str | None = None,
+    inference_config: dict[str, object] | None = None,
 ) -> tuple[int, int]:
     succeeded = 0
     failed = 0
@@ -257,6 +276,11 @@ def _process_questions(
                         "source_file": input_path.name,
                         "line_number": line_number,
                         "business_context_sources": documents.source_metadata,
+                        **(
+                            {"inference_config": inference_config}
+                            if inference_config is not None
+                            else {}
+                        ),
                     },
                     column_coercions=coercions.get(business_id),
                     rulebook=documents.rulebook,
@@ -316,6 +340,7 @@ def main() -> None:
     parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"))
     parser.add_argument("--max-new-tokens", type=int)
     parser.add_argument("--parameter-cap", type=int)
+    parser.add_argument("--generation-timeout-seconds", type=float)
     args = parser.parse_args()
 
     try:
@@ -378,10 +403,20 @@ def main() -> None:
         if args.parameter_cap is not None
         else config.get("parameter_cap", 15_000_000_000)
     )
+    generation_timeout_seconds = (
+        args.generation_timeout_seconds
+        if args.generation_timeout_seconds is not None
+        else config.get("generation_timeout_seconds")
+    )
     if not isinstance(max_new_tokens, int) or not 1 <= max_new_tokens <= 4096:
         parser.error("max-new-tokens must be between 1 and 4096")
     if not isinstance(parameter_cap, int) or parameter_cap < 1:
         parser.error("parameter-cap must be positive")
+    if (
+        generation_timeout_seconds is not None
+        and not _valid_generation_timeout(generation_timeout_seconds)
+    ):
+        parser.error("generation-timeout-seconds must be finite and positive")
     coercions_path = option("coercions")
     rulebook_path = option("rulebook")
     calendar_path = option("calendar")
@@ -407,6 +442,7 @@ def main() -> None:
         precision=precision,
         max_new_tokens=max_new_tokens,
         parameter_cap=parameter_cap,
+        generation_timeout_seconds=generation_timeout_seconds,
     )
     try:
         backend.load()
@@ -433,6 +469,12 @@ def main() -> None:
             ),
             submission_writer=submission_writer,
             default_as_of_date=as_of_date,
+            inference_config={
+                "precision": precision,
+                "max_new_tokens": max_new_tokens,
+                "parameter_cap": parameter_cap,
+                "generation_timeout_seconds": generation_timeout_seconds,
+            },
         )
         if submission_writer is not None:
             if failed:

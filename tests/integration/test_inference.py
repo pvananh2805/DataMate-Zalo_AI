@@ -34,6 +34,7 @@ def test_inference_config_resolves_relative_paths_from_config_file(
                 "submission_output": "output/submission.jsonl",
                 "as_of_date": "2026-01-31",
                 "precision": "fp16",
+                "generation_timeout_seconds": 30,
             }
         ),
         encoding="utf-8",
@@ -49,6 +50,7 @@ def test_inference_config_resolves_relative_paths_from_config_file(
     )
     assert config["as_of_date"] == "2026-01-31"
     assert config["precision"] == "fp16"
+    assert config["generation_timeout_seconds"] == 30
 
 
 def test_inference_config_rejects_unknown_fields(tmp_path: Path) -> None:
@@ -56,6 +58,30 @@ def test_inference_config_rejects_unknown_fields(tmp_path: Path) -> None:
     config_path.write_text('{"unexpected": true}', encoding="utf-8")
 
     with pytest.raises(ValueError, match="Unknown inference configuration fields"):
+        _read_inference_config(config_path)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), True])
+def test_inference_config_rejects_invalid_generation_timeout(
+    tmp_path: Path,
+    timeout: object,
+) -> None:
+    config_path = tmp_path / "inference.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "input": "questions.jsonl",
+                "business_data_root": "business-data",
+                "model_path": "model",
+                "log": "run.jsonl",
+                "submission_output": "submission.jsonl",
+                "generation_timeout_seconds": timeout,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="generation_timeout_seconds"):
         _read_inference_config(config_path)
 
 
@@ -181,6 +207,12 @@ def test_inference_processor_integrates_context_logging_and_submission(
         calendar_path=None,
         submission_writer=submission_writer,
         default_as_of_date="2026-01-31",
+        inference_config={
+            "precision": "bf16",
+            "max_new_tokens": 1024,
+            "parameter_cap": 15_000_000_000,
+            "generation_timeout_seconds": 30,
+        },
     )
     assert (succeeded, failed) == (2, 0)
     submission_writer.commit()
@@ -192,6 +224,12 @@ def test_inference_processor_integrates_context_logging_and_submission(
     run_records = read_run_records(log_path)
     assert len(run_records) == 2
     run_record = run_records[0]
+    assert run_record["input"]["metadata"]["inference_config"] == {
+        "precision": "bf16",
+        "max_new_tokens": 1024,
+        "parameter_cap": 15_000_000_000,
+        "generation_timeout_seconds": 30,
+    }
     assert (
         run_record["input"]["metadata"]["business_context_sources"]["rulebook"][
             "sha256"

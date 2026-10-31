@@ -10,5 +10,6 @@
   "as_of_date": null,
   "precision": "bf16",
   "max_new_tokens": 1024,
-  "parameter_cap": 15000000000
+  "parameter_cap": 15000000000,
+  "generation_timeout_seconds": null
 }

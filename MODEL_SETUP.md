@@ -104,13 +104,17 @@ Trong `config\inference.local.json`, sửa tối thiểu:
   "submission_output": "..\\output\\submission.jsonl",
   "precision": "bf16",
   "max_new_tokens": 1024,
-  "parameter_cap": 15000000000
+  "parameter_cap": 15000000000,
+  "generation_timeout_seconds": null
 }
 ```
 
 Đây là các trường cần thay trong config mẫu; giữ lại các trường context khác
 nếu cần. `model_path` có thể là đường dẫn tuyệt đối hoặc tương đối so với thư
 mục chứa config. Config cá nhân `config/inference.local.json` được Git ignore.
+`generation_timeout_seconds` là giới hạn tùy chọn cho mỗi lần sinh; `null`
+nghĩa là không đặt giới hạn thời gian. Nếu cấu hình, backend chuyển giới hạn cho
+Transformers và báo lỗi thay vì trả một QueryPlan bị cắt khi hết thời gian.
 Các thư mục input/output phải tồn tại phù hợp; output không được nằm trong
 input/data root.
 
@@ -174,7 +178,8 @@ Nếu chỉ đổi precision hoặc giới hạn sinh, có thể override bằng
 python scripts\run_inference.py --config config\inference.local.json --precision fp16 --max-new-tokens 512
 ```
 
-CLI nạp model một lần, xử lý câu hỏi JSONL tuần tự và ghi run log cùng submission
+CLI nạp model một lần, xử lý câu hỏi JSONL tuần tự và ghi cấu hình inference
+cùng run log và submission
 output. Submission hiện theo schema tham khảo training rulebook; chưa xác nhận
 với validator chính thức. Nếu lỗi một câu hỏi, process trả exit code khác 0 và
 không xuất submission một phần.

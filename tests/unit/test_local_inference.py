@@ -1,8 +1,10 @@
 import sys
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 
+import datamate.local_inference as local_inference
 from datamate.local_inference import LocalModelError, LocalTransformersBackend
 
 
@@ -22,17 +24,30 @@ def test_local_backend_requires_checkpoint_and_has_no_remote_fallback(
         backend.generate("Tổng doanh thu?")
 
 
-def _fake_cuda_backend(tmp_path, monkeypatch, *, free_bytes: int):
+def _fake_cuda_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    free_bytes: int,
+    generation_timeout_seconds: float | None = None,
+):
     class FakeTensor:
         def __init__(self, size: int, element_size: int) -> None:
             self.size = size
             self.bytes_per_element = element_size
+            self.shape = (1, size)
 
         def numel(self) -> int:
             return self.size
 
         def element_size(self) -> int:
             return self.bytes_per_element
+
+        def to(self, _device):
+            return self
+
+        def __getitem__(self, _index):
+            return FakeTensor(1, self.bytes_per_element)
 
     class FakeModel:
         moved_to = None
@@ -56,9 +71,21 @@ def _fake_cuda_backend(tmp_path, monkeypatch, *, free_bytes: int):
         def eval(self):
             return self
 
+        def generate(self, **options):
+            self.generation_options = options
+            return FakeTensor(2, 2)
+
     class FakeTokenizer:
+        chat_template = None
         pad_token_id = 0
         eos_token_id = 0
+
+        def __call__(self, _prompt, **_options):
+            return {"input_ids": FakeTensor(2, 2)}
+
+        def decode(self, _continuation, *, skip_special_tokens):
+            assert skip_special_tokens is True
+            return "{}"
 
     model = FakeModel()
     fake_torch = SimpleNamespace(
@@ -72,6 +99,7 @@ def _fake_cuda_backend(tmp_path, monkeypatch, *, free_bytes: int):
         float16="float16",
         bfloat16="bfloat16",
         device=lambda name: name,
+        inference_mode=nullcontext,
     )
     fake_transformers = SimpleNamespace(
         AutoTokenizer=SimpleNamespace(
@@ -85,7 +113,10 @@ def _fake_cuda_backend(tmp_path, monkeypatch, *, free_bytes: int):
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
-    return LocalTransformersBackend(checkpoint), model
+    return LocalTransformersBackend(
+        checkpoint,
+        generation_timeout_seconds=generation_timeout_seconds,
+    ), model
 
 
 def test_local_backend_rejects_insufficient_cuda_memory_before_device_transfer(
@@ -149,3 +180,23 @@ def test_local_backend_requires_supported_cache_dimensions_in_config(
         backend.load()
 
     assert model.moved_to is None
+
+
+def test_local_backend_enforces_configured_generation_timeout(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, model = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=1_000_000,
+        generation_timeout_seconds=1,
+    )
+    backend.load()
+    ticks = iter((10.0, 12.0))
+    monkeypatch.setattr(local_inference.time, "monotonic", lambda: next(ticks))
+
+    with pytest.raises(LocalModelError, match="exceeded the configured timeout"):
+        backend.generate("prompt")
+
+    assert model.generation_options["max_time"] == 1

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import math
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,7 @@ class LocalTransformersBackend:
         max_prompt_tokens: int = 16_384,
         parameter_cap: int = 15_000_000_000,
         cpu_threads: int = 2,
+        generation_timeout_seconds: float | None = None,
     ) -> None:
         self.model_path = Path(model_path).resolve()
         if not self.model_path.is_dir():
@@ -69,11 +72,26 @@ class LocalTransformersBackend:
             raise ValueError("max_new_tokens must be between 1 and 4096")
         if max_prompt_tokens < 1 or parameter_cap < 1 or cpu_threads < 1:
             raise ValueError("token limits, parameter cap, and threads must be positive")
+        if generation_timeout_seconds is not None:
+            try:
+                timeout_is_valid = (
+                    not isinstance(generation_timeout_seconds, bool)
+                    and isinstance(generation_timeout_seconds, (int, float))
+                    and math.isfinite(float(generation_timeout_seconds))
+                    and generation_timeout_seconds > 0
+                )
+            except OverflowError:
+                timeout_is_valid = False
+            if not timeout_is_valid:
+                raise ValueError(
+                    "generation_timeout_seconds must be finite and positive"
+                )
         self.precision = precision
         self.max_new_tokens = max_new_tokens
         self.max_prompt_tokens = max_prompt_tokens
         self.parameter_cap = parameter_cap
         self.cpu_threads = cpu_threads
+        self.generation_timeout_seconds = generation_timeout_seconds
         self.model_name = self.model_path.name
         self.parameter_count: int | None = None
         self.model_storage_bytes: int | None = None
@@ -218,10 +236,22 @@ class LocalTransformersBackend:
                 "use_cache": True,
                 "pad_token_id": tokenizer.pad_token_id,
             }
+            if self.generation_timeout_seconds is not None:
+                generation_options["max_time"] = self.generation_timeout_seconds
             if tokenizer.eos_token_id is not None:
                 generation_options["eos_token_id"] = tokenizer.eos_token_id
+            generation_started = time.monotonic()
             with torch.inference_mode():
                 generated = self._model.generate(**inputs, **generation_options)
+            generation_elapsed = time.monotonic() - generation_started
+            if (
+                self.generation_timeout_seconds is not None
+                and generation_elapsed > self.generation_timeout_seconds
+            ):
+                raise LocalModelError(
+                    "Model generation exceeded the configured timeout of "
+                    f"{self.generation_timeout_seconds:g} seconds"
+                )
             continuation = generated[0, input_ids.shape[-1] :]
             if continuation.numel() == 0:
                 raise LocalModelError("Model returned an empty completion")
