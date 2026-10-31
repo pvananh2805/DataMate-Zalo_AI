@@ -4,7 +4,7 @@
 
 Chưa có cơ sở đo độ chính xác end-to-end hoặc tuyên bố DataMate đã giải được một dạng câu hỏi thực tế. Bộ dữ liệu train có 3.000 câu hỏi và 3.000 đáp án, nhưng không có dự đoán của một model/planner đang chạy để đối chiếu; đáp án gold không phải nhãn QueryPlan. Bộ test chứng minh phép toán trên fixture và pipeline executor, không chứng minh planner hiểu và ánh xạ đúng câu hỏi train.
 
-Trong vòng này, đã sửa lỗi lọc ngày khiến giá trị `date`/`datetime` đã chuẩn hóa không so sánh được với mốc ISO dạng chuỗi; đồng thời loại bỏ lọc từ vựng không an toàn cho ngày sai định dạng. QueryPlan/executor hiện cho phép mỗi aggregation có filter và time range riêng để đối chiếu hai kỳ trên cùng bảng, và làm tròn kết quả phần trăm đến 2 chữ số với quy tắc nửa làm tròn lên theo rulebook training. Public test không được mở. Không commit hoặc push.
+Trong vòng này, đã sửa lỗi lọc ngày khiến giá trị `date`/`datetime` đã chuẩn hóa không so sánh được với mốc ISO dạng chuỗi; đồng thời loại bỏ lọc từ vựng không an toàn cho ngày sai định dạng. QueryPlan/executor hiện cho phép mỗi aggregation có filter và time range riêng để đối chiếu hai kỳ trên cùng bảng, và làm tròn kết quả phần trăm đến 2 chữ số với quy tắc nửa làm tròn lên theo rulebook training. Public test không được mở. Mốc đã kiểm thử được commit `40dc03a` và push lên `origin/master`.
 
 ## Thống kê dữ liệu train
 
@@ -44,4 +44,4 @@ Các câu hỏi train được đọc có dạng bao gồm tổng phiếu nhập
 4. Cần bộ benchmark/annotation có thể kiểm chứng cho 70 trường hợp unanswerable và câu hỏi mơ hồ/thiếu trường; không suy ra cách giải từ answer gold.
 5. Chưa xác minh được evaluator PA/validator challenge-specific và yêu cầu submission; chưa có GPU/model để inference benchmark hoặc fine-tune. Public test chưa được mở và không được dùng.
 
-**Phạm vi vòng này:** sửa temporal filter, thêm period scope cho từng aggregation, áp dụng precision phần trăm theo rulebook và bổ sung test đơn vị/integration. Không fine-tune, không mở public test, không tạo nhãn giả, không commit/push. Kết quả này là một bước năng lực executor đã kiểm chứng, chưa phải milestone giải câu hỏi end-to-end.
+**Phạm vi vòng này:** sửa temporal filter, thêm period scope cho từng aggregation, áp dụng precision phần trăm theo rulebook và bổ sung test đơn vị/integration. Không fine-tune, không mở public test hoặc tạo nhãn giả. Kết quả này là một bước năng lực executor đã kiểm chứng, chưa phải milestone giải câu hỏi end-to-end.
