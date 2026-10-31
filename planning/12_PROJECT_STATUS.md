@@ -1,7 +1,18 @@
 # Trạng thái dự án DataMate
 
 **Cập nhật:** 2026-10-31
-**Mốc code đã xác minh trước thay đổi hiện tại:** `10c7389` (xác minh Regulations chung; các thay đổi đã đẩy lên repository riêng).
+**Mốc code nền trước vòng Solve-First:** `365ed71`; thay đổi vòng này chưa commit/push.
+
+## Cập nhật Solve-First
+
+- Đã phân tích 3.000 cặp câu hỏi/đáp án train. Tín hiệu từ khóa cho thấy có nhiều câu về kỳ thời gian, doanh thu/tổng hợp, tỷ lệ, ranking và so sánh; đây là nhóm heuristic chồng lấp, không phải nhãn câu hỏi chính thức. 70 câu có answer type `unanswerable`.
+- Không có prediction từ model/planner hoặc annotation QueryPlan để đo độ chính xác; **accuracy chưa đo**, không phải 0%. Các phép tính đã có test fixture không chứng minh hiểu câu hỏi thực tế. Xem `planning/16_SOLVE_FIRST_REPORT.md` để biết chi tiết phân loại, phạm vi test và blocker.
+- Đã sửa lọc khoảng ngày trong `src/datamate/query_executor.py`: hỗ trợ giá trị `date`, `datetime` và chuỗi ISO; tính đúng trọn ngày kết thúc khi inclusive; từ chối giá trị ngày không hợp lệ thay vì so sánh từ vựng.
+- QueryPlan/executor hỗ trợ filter và time range riêng trên từng aggregation để so sánh hai kỳ từ cùng bảng; đã kiểm thử so sánh theo nhóm qua pipeline, serialization và evidence.
+- `ratio_percent` và `percent_change` được làm tròn đúng 2 chữ số thập phân theo `ROUND_HALF_UP`, như rulebook training yêu cầu.
+- Test hồi quy cover date/datetime, timestamp cuối ngày, cận kết thúc độc quyền, lỗi định dạng ngày, giảm phần trăm âm và tie-break top-K, so sánh hai kỳ qua pipeline, cũng như trường hợp làm tròn nửa đơn vị.
+- Kiểm chứng sau thay đổi: toàn bộ suite **128 passed**; `compileall` và `git diff --check` thành công. Không mở public test, không fine-tune, không commit/push.
+- Các khoảng trống ưu tiên tiếp: time-bucket theo tháng/tuần/quý, thực thi business rules có test, xử lý câu kỳ không có giao dịch so với kỳ ngoài vùng dữ liệu, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
 
 ## Đã triển khai và kiểm chứng
 

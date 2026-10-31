@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation, localcontext
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from typing import Iterable, Mapping, Sequence
 
 from .query_plan import (
@@ -13,6 +14,7 @@ from .query_plan import (
     Filter,
     Join,
     QueryPlan,
+    TimeRange,
     validate_query_plan,
 )
 
@@ -109,18 +111,41 @@ def _matches(value: object, condition: Filter) -> bool:
     raise QueryExecutionError(f"Unsupported filter operator: {op}")
 
 
-def _time_matches(value: object, plan: QueryPlan) -> bool:
-    time_range = plan.time_range
-    if time_range is None:
-        return True
+def _time_matches(value: object, time_range: TimeRange) -> bool:
     if value is None:
         return False
+
+    if isinstance(value, datetime):
+        source_day = value.date()
+    elif isinstance(value, date):
+        source_day = value
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            source_day = date.fromisoformat(text)
+        except ValueError:
+            try:
+                source_day = datetime.fromisoformat(
+                    text.replace("Z", "+00:00")
+                ).date()
+            except ValueError as exc:
+                raise QueryExecutionError(
+                    "Time-range source values must be an ISO-8601 date or datetime"
+                ) from exc
+    else:
+        raise QueryExecutionError(
+            "Time-range source values must be date, datetime, or ISO-8601 text"
+        )
+
     try:
-        if time_range.inclusive_end:
-            return time_range.start <= value <= time_range.end
-        return time_range.start <= value < time_range.end
-    except TypeError as exc:
-        raise QueryExecutionError("Incompatible time-range and source value types") from exc
+        start = date.fromisoformat(time_range.start)
+        end = date.fromisoformat(time_range.end)
+    except ValueError as exc:
+        raise QueryExecutionError("Time-range boundaries must be ISO-8601 dates") from exc
+
+    if time_range.inclusive_end:
+        return start <= source_day <= end
+    return start <= source_day < end
 
 
 def _to_decimal(value: object, *, alias: str) -> Decimal:
@@ -168,6 +193,29 @@ def _aggregate(
     group_refs = plan.group_by
 
     for context in rows:
+        matched_aggregations = [
+            all(
+                _matches(
+                    _row_value(context, column_indexes, filter_item.column),
+                    filter_item,
+                )
+                for filter_item in aggregation.filters
+            )
+            and (
+                aggregation.time_range is None
+                or _time_matches(
+                    _row_value(
+                        context,
+                        column_indexes,
+                        aggregation.time_range.column,
+                    ),
+                    aggregation.time_range,
+                )
+            )
+            for aggregation in plan.aggregations
+        ]
+        if plan.aggregations and group_refs and not any(matched_aggregations):
+            continue
         key = tuple(_row_value(context, column_indexes, ref) for ref in group_refs)
         try:
             if key not in grouped:
@@ -182,7 +230,14 @@ def _aggregate(
         except TypeError as exc:
             raise QueryExecutionError("Group-by values must be hashable scalars") from exc
         _, states = grouped[key]
-        for aggregation, state in zip(plan.aggregations, states, strict=True):
+        for aggregation, state, matches_scope in zip(
+            plan.aggregations,
+            states,
+            matched_aggregations,
+            strict=True,
+        ):
+            if not matches_scope:
+                continue
             value = (
                 1
                 if aggregation.column is None
@@ -267,7 +322,18 @@ def _calculate(
             )
             with localcontext() as decimal_context:
                 decimal_context.prec = max(decimal_context.prec, 50)
-                row[calculation.alias] = numerator / right_number * multiplier
+                calculated = numerator / right_number * multiplier
+                if calculation.function in {"ratio_percent", "percent_change"}:
+                    decimal_context.prec = max(
+                        decimal_context.prec,
+                        max(0, calculated.adjusted()) + 3,
+                    )
+                    row[calculation.alias] = calculated.quantize(
+                        Decimal("0.01"),
+                        rounding=ROUND_HALF_UP,
+                    )
+                else:
+                    row[calculation.alias] = calculated
 
 
 def execute_query_plan(
@@ -401,7 +467,8 @@ def execute_query_plan(
             ):
                 continue
             if plan.time_range and not _time_matches(
-                _row_value(context, column_indexes, plan.time_range.column), plan
+                _row_value(context, column_indexes, plan.time_range.column),
+                plan.time_range,
             ):
                 continue
             yield context

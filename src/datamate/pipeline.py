@@ -92,12 +92,22 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
         if aggregation.column is not None
     )
     references.update(item.column for item in plan.filters)
+    for aggregation in plan.aggregations:
+        references.update(item.column for item in aggregation.filters)
+        if aggregation.time_range is not None:
+            references.add(aggregation.time_range.column)
     if plan.time_range is not None:
         references.add(plan.time_range.column)
     for join in plan.joins:
         references.update((join.left, join.right))
 
     evidence: list[Evidence] = []
+    filter_count = len(plan.filters) + sum(
+        len(aggregation.filters) for aggregation in plan.aggregations
+    )
+    has_time_range = plan.time_range is not None or any(
+        aggregation.time_range is not None for aggregation in plan.aggregations
+    )
     for table in execution.trace.source_tables:
         columns = tuple(
             sorted(ref.column for ref in references if ref.table == table)
@@ -108,8 +118,8 @@ def _evidence_for(plan: QueryPlan, execution: ExecutionResult) -> tuple[Evidence
                 columns=columns,
                 operation="validated_query_plan",
                 row_count=execution.trace.source_rows.get(table, 0),
-                filter_summary=f"{len(plan.filters)} filters; "
-                f"time_range={'yes' if plan.time_range else 'no'}",
+                filter_summary=f"{filter_count} filters; "
+                f"time_range={'yes' if has_time_range else 'no'}",
             )
         )
     return tuple(evidence)

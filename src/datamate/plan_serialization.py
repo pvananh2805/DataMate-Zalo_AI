@@ -67,6 +67,32 @@ def _filter_value(value: object) -> object:
     return value
 
 
+def _filter_from_data(value: object, context: str) -> Filter:
+    filter_data = _object(value, context, {"column", "operator", "value"})
+    return Filter(
+        column=_column_ref(filter_data.get("column"), f"{context}.column"),
+        operator=_string(filter_data.get("operator"), f"{context}.operator"),
+        value=_filter_value(filter_data.get("value")),
+    )
+
+
+def _time_range_from_data(value: object, context: str) -> TimeRange:
+    time_data = _object(
+        value,
+        context,
+        {"column", "start", "end", "inclusive_end"},
+    )
+    return TimeRange(
+        column=_column_ref(time_data.get("column"), f"{context}.column"),
+        start=_string(time_data.get("start"), f"{context}.start"),
+        end=_string(time_data.get("end"), f"{context}.end"),
+        inclusive_end=_boolean(
+            time_data.get("inclusive_end", True),
+            f"{context}.inclusive_end",
+        ),
+    )
+
+
 def _reject_json_constant(value: str) -> Any:
     raise QueryPlanFormatError(f"non-finite JSON number is not allowed: {value}")
 
@@ -134,17 +160,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
     )
     filters = []
     for index, item in enumerate(_sequence(data.get("filters", []), "filters")):
-        context = f"filters[{index}]"
-        filter_data = _object(item, context, {"column", "operator", "value"})
-        filters.append(
-            Filter(
-                column=_column_ref(filter_data.get("column"), f"{context}.column"),
-                operator=_string(
-                    filter_data.get("operator"), f"{context}.operator"
-                ),
-                value=_filter_value(filter_data.get("value")),
-            )
-        )
+        filters.append(_filter_from_data(item, f"filters[{index}]"))
 
     group_by = tuple(
         _column_ref(item, f"group_by[{index}]")
@@ -155,8 +171,19 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         _sequence(data.get("aggregations", []), "aggregations")
     ):
         context = f"aggregations[{index}]"
-        aggregation = _object(item, context, {"function", "column", "alias"})
+        aggregation = _object(
+            item,
+            context,
+            {"function", "column", "alias", "filters", "time_range"},
+        )
         column_value = aggregation.get("column")
+        scoped_filters = tuple(
+            _filter_from_data(filter_item, f"{context}.filters[{filter_index}]")
+            for filter_index, filter_item in enumerate(
+                _sequence(aggregation.get("filters", []), f"{context}.filters")
+            )
+        )
+        time_range_value = aggregation.get("time_range")
         aggregations.append(
             Aggregation(
                 function=_string(
@@ -168,6 +195,15 @@ def query_plan_from_dict(value: object) -> QueryPlan:
                     else _column_ref(column_value, f"{context}.column")
                 ),
                 alias=_string(aggregation.get("alias"), f"{context}.alias"),
+                filters=scoped_filters,
+                time_range=(
+                    None
+                    if time_range_value is None
+                    else _time_range_from_data(
+                        time_range_value,
+                        f"{context}.time_range",
+                    )
+                ),
             )
         )
 
@@ -214,20 +250,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
     time_range_value = data.get("time_range")
     time_range = None
     if time_range_value is not None:
-        time_data = _object(
-            time_range_value,
-            "time_range",
-            {"column", "start", "end", "inclusive_end"},
-        )
-        time_range = TimeRange(
-            column=_column_ref(time_data.get("column"), "time_range.column"),
-            start=_string(time_data.get("start"), "time_range.start"),
-            end=_string(time_data.get("end"), "time_range.end"),
-            inclusive_end=_boolean(
-                time_data.get("inclusive_end", True),
-                "time_range.inclusive_end",
-            ),
-        )
+        time_range = _time_range_from_data(time_range_value, "time_range")
 
     business_rules = tuple(
         _string(item, f"business_rules[{index}]")

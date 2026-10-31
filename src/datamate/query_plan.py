@@ -102,6 +102,8 @@ class Aggregation:
     function: AggregationKind
     column: ColumnRef | None
     alias: str
+    filters: tuple[Filter, ...] = ()
+    time_range: TimeRange | None = None
 
 
 @dataclass(frozen=True)
@@ -206,8 +208,9 @@ def validate_query_plan(
         check_column(ref, "selected column")
     for ref in plan.group_by:
         check_column(ref, "group by")
-    for filter_item in plan.filters:
-        check_column(filter_item.column, "filter")
+
+    def check_filter(filter_item: Filter, context: str) -> None:
+        check_column(filter_item.column, context)
         if filter_item.operator not in _FILTER_OPERATORS:
             issues.append(f"unsupported filter operator: {filter_item.operator}")
         elif filter_item.operator == "between":
@@ -236,6 +239,25 @@ def validate_query_plan(
         if filter_item.operator == "contains" and not isinstance(filter_item.value, str):
             issues.append("contains filter requires a text value")
 
+    def check_time_range(time_range: TimeRange, context: str) -> None:
+        check_column(time_range.column, context)
+        if not isinstance(time_range.start, str) or not isinstance(
+            time_range.end, str
+        ):
+            issues.append(f"{context} requires start and end values")
+            return
+        try:
+            start = date.fromisoformat(time_range.start)
+            end = date.fromisoformat(time_range.end)
+        except ValueError:
+            issues.append(f"{context} values must be ISO-8601 dates")
+            return
+        if start > end:
+            issues.append(f"{context} start must not be after end")
+
+    for filter_item in plan.filters:
+        check_filter(filter_item, "filter")
+
     aliases: set[str] = set()
     for aggregation in plan.aggregations:
         if aggregation.function not in _AGGREGATIONS:
@@ -243,12 +265,17 @@ def validate_query_plan(
         if not aggregation.alias or aggregation.alias in aliases:
             issues.append(f"aggregation alias is empty or duplicated: {aggregation.alias!r}")
         aliases.add(aggregation.alias)
-        if aggregation.function == "count" and aggregation.column is None:
-            continue
-        if aggregation.column is None:
+        if aggregation.column is None and aggregation.function != "count":
             issues.append(f"{aggregation.function} requires a column")
-        else:
+        elif aggregation.column is not None:
             check_column(aggregation.column, "aggregation")
+        for filter_item in aggregation.filters:
+            check_filter(filter_item, f"aggregation {aggregation.alias!r} filter")
+        if aggregation.time_range is not None:
+            check_time_range(
+                aggregation.time_range,
+                f"aggregation {aggregation.alias!r} time range",
+            )
 
     for calculation in plan.calculations:
         if calculation.function not in _CALCULATIONS:
@@ -293,20 +320,7 @@ def validate_query_plan(
                 )
 
     if plan.time_range is not None:
-        check_column(plan.time_range.column, "time range")
-        if not isinstance(plan.time_range.start, str) or not isinstance(
-            plan.time_range.end, str
-        ):
-            issues.append("time range requires start and end values")
-        else:
-            try:
-                start = date.fromisoformat(plan.time_range.start)
-                end = date.fromisoformat(plan.time_range.end)
-            except ValueError:
-                issues.append("time range values must be ISO-8601 dates")
-            else:
-                if start > end:
-                    issues.append("time range start must not be after end")
+        check_time_range(plan.time_range, "time range")
     if plan.limit is not None and (
         isinstance(plan.limit, bool)
         or not isinstance(plan.limit, int)

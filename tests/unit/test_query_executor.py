@@ -1,3 +1,4 @@
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -225,9 +226,240 @@ def test_ratio_and_percent_change_are_deterministic_and_guard_zero_division() ->
 
     assert result.rows[0]["growth_percent"] == Decimal("20")
     assert result.rows[0]["ratio"] == Decimal("1.2")
+    decreasing = execute_query_plan(
+        plan,
+        catalog=arguments["catalog"],
+        sources={table: [(Decimal("80"), Decimal("100"))]},
+    )
+    assert decreasing.rows[0]["growth_percent"] == Decimal("-20")
     with pytest.raises(QueryExecutionError, match="divides by zero"):
         execute_query_plan(
             plan,
             catalog=arguments["catalog"],
             sources={table: [(Decimal("120"), Decimal("0"))]},
+        )
+
+
+def test_percentage_calculations_round_half_up_to_two_decimal_places() -> None:
+    table = "periods"
+    numerator = ColumnRef(table, "numerator")
+    denominator = ColumnRef(table, "denominator")
+    plan = QueryPlan(
+        base_table=table,
+        aggregations=(
+            Aggregation("sum", numerator, "numerator"),
+            Aggregation("sum", denominator, "denominator"),
+        ),
+        calculations=(
+            Calculation("ratio_percent", "numerator", "denominator", "share"),
+            Calculation(
+                "percent_change",
+                "numerator",
+                "denominator",
+                "growth_percent",
+            ),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("numerator", "denominator")},
+        sources={table: [(Decimal(1), Decimal(3))]},
+    )
+
+    assert result.rows[0]["share"] == Decimal("33.33")
+    assert result.rows[0]["growth_percent"] == Decimal("-66.67")
+
+    half_cent_boundary = execute_query_plan(
+        plan,
+        catalog={table: ("numerator", "denominator")},
+        sources={table: [(Decimal(1), Decimal(32))]},
+    )
+    assert half_cent_boundary.rows[0]["share"] == Decimal("3.13")
+    assert half_cent_boundary.rows[0]["growth_percent"] == Decimal("-96.88")
+
+
+def test_min_max_and_top_k_honor_explicit_tie_break_sort() -> None:
+    table = "sales"
+    product_code = ColumnRef(table, "product_code")
+    quantity = ColumnRef(table, "quantity")
+    plan = QueryPlan(
+        base_table=table,
+        group_by=(product_code,),
+        aggregations=(
+            Aggregation("sum", quantity, "units_sold"),
+            Aggregation("min", quantity, "minimum_sale"),
+            Aggregation("max", quantity, "maximum_sale"),
+        ),
+        sort=(Sort("units_sold", "desc"), Sort(product_code, "asc")),
+        limit=2,
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("product_code", "quantity")},
+        sources={
+            table: [
+                ("P-02", Decimal(5)),
+                ("P-01", Decimal(5)),
+                ("P-03", Decimal(4)),
+                ("P-01", Decimal(2)),
+            ]
+        },
+    )
+
+    assert result.rows == (
+        {
+            f"{table}.product_code": "P-01",
+            "units_sold": Decimal(7),
+            "minimum_sale": Decimal(2),
+            "maximum_sale": Decimal(5),
+        },
+        {
+            f"{table}.product_code": "P-02",
+            "units_sold": Decimal(5),
+            "minimum_sale": Decimal(5),
+            "maximum_sale": Decimal(5),
+        },
+    )
+
+
+def test_scoped_aggregations_compare_two_periods_from_the_same_table() -> None:
+    table = "sales"
+    product = ColumnRef(table, "product")
+    amount = ColumnRef(table, "amount")
+    sold_at = ColumnRef(table, "sold_at")
+    plan = QueryPlan(
+        base_table=table,
+        group_by=(product,),
+        aggregations=(
+            Aggregation(
+                "sum",
+                amount,
+                "previous_revenue",
+                time_range=TimeRange(sold_at, "2026-01-01", "2026-01-31"),
+            ),
+            Aggregation(
+                "sum",
+                amount,
+                "current_revenue",
+                time_range=TimeRange(sold_at, "2026-02-01", "2026-02-28"),
+            ),
+        ),
+        calculations=(
+            Calculation(
+                "percent_change",
+                "current_revenue",
+                "previous_revenue",
+                "growth_percent",
+            ),
+        ),
+        sort=(Sort(product, "asc"),),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("product", "amount", "sold_at")},
+        sources={
+            table: [
+                ("A", Decimal(60), date(2026, 1, 10)),
+                ("A", Decimal(40), date(2026, 1, 31)),
+                ("A", Decimal(120), datetime(2026, 2, 28, 23, 59)),
+                ("B", Decimal(50), date(2026, 1, 15)),
+                ("B", Decimal(25), date(2026, 2, 10)),
+                ("C", Decimal(500), date(2026, 3, 10)),
+            ]
+        },
+    )
+
+    assert result.rows == (
+        {
+            f"{table}.product": "A",
+            "previous_revenue": Decimal(100),
+            "current_revenue": Decimal(120),
+            "growth_percent": Decimal(20),
+        },
+        {
+            f"{table}.product": "B",
+            "previous_revenue": Decimal(50),
+            "current_revenue": Decimal(25),
+            "growth_percent": Decimal(-50),
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("values", "inclusive_end", "expected"),
+    [
+        (
+            [date(2026, 1, 1), date(2026, 1, 31), date(2026, 2, 1)],
+            True,
+            [date(2026, 1, 1), date(2026, 1, 31)],
+        ),
+        (
+            [
+                datetime(2026, 1, 1, 0, 0),
+                datetime(2026, 1, 31, 23, 59, 59),
+                datetime(2026, 2, 1, 0, 0),
+            ],
+            True,
+            [datetime(2026, 1, 1, 0, 0), datetime(2026, 1, 31, 23, 59, 59)],
+        ),
+        (
+            [
+                datetime(2026, 1, 1, 0, 0),
+                datetime(2026, 1, 31, 0, 0),
+                datetime(2026, 2, 1, 0, 0),
+            ],
+            False,
+            [datetime(2026, 1, 1, 0, 0)],
+        ),
+        (
+            ["2026-01-01T00:00:00", "2026-01-31T23:59:59", "2026-02-01"],
+            True,
+            ["2026-01-01T00:00:00", "2026-01-31T23:59:59"],
+        ),
+    ],
+)
+def test_time_range_handles_date_and_datetime_cells_by_calendar_day(
+    values: list[object],
+    inclusive_end: bool,
+    expected: list[object],
+) -> None:
+    table = "orders"
+    order_date = ColumnRef(table, "order_date")
+    plan = QueryPlan(
+        base_table=table,
+        selected_columns=(order_date,),
+        time_range=TimeRange(
+            order_date,
+            "2026-01-01",
+            "2026-01-31",
+            inclusive_end=inclusive_end,
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("order_date",)},
+        sources={table: [(value,) for value in values]},
+    )
+
+    assert [row[f"{table}.order_date"] for row in result.rows] == expected
+
+
+def test_time_range_rejects_non_iso_date_values_instead_of_lexically_filtering() -> None:
+    table = "orders"
+    order_date = ColumnRef(table, "order_date")
+    plan = QueryPlan(
+        base_table=table,
+        selected_columns=(order_date,),
+        time_range=TimeRange(order_date, "2026-01-01", "2026-01-31"),
+    )
+
+    with pytest.raises(QueryExecutionError, match="must be an ISO-8601 date"):
+        execute_query_plan(
+            plan,
+            catalog={table: ("order_date",)},
+            sources={table: [("31/01/2026",)]},
         )

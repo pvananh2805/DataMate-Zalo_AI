@@ -118,6 +118,37 @@ def test_plan_rejects_business_rules_that_executor_cannot_apply() -> None:
         validate_query_plan(plan, CATALOG)
 
 
+def test_plan_validates_scoped_aggregation_filters_and_dates() -> None:
+    orders = "orders.csv::orders"
+    plan = QueryPlan(
+        base_table=orders,
+        aggregations=(
+            Aggregation(
+                "count",
+                None,
+                "orders",
+                filters=(
+                    Filter(ColumnRef(orders, "missing_status"), "eq", "complete"),
+                ),
+                time_range=TimeRange(
+                    ColumnRef(orders, "order_date"),
+                    "2026-02-01",
+                    "2026-01-01",
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(PlanValidationError) as error:
+        validate_query_plan(plan, CATALOG)
+
+    assert any(
+        "unknown column orders.csv::orders.missing_status" in issue
+        for issue in error.value.issues
+    )
+    assert any("start must not be after end" in issue for issue in error.value.issues)
+
+
 def test_plan_rejects_unsafe_literals_non_iso_dates_and_boolean_limits() -> None:
     orders = "orders.csv::orders"
     plan = QueryPlan(

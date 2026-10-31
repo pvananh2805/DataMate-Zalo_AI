@@ -19,10 +19,13 @@ from datamate.question_understanding import (
 from datamate.query_executor import QueryExecutionError
 from datamate.query_plan import (
     Aggregation,
+    Calculation,
     ColumnRef,
     Filter,
     PlanValidationError,
     QueryPlan,
+    Sort,
+    TimeRange,
 )
 from datamate.run_logging import RunLogError, read_run_records
 from datamate.submission import SubmissionWriter
@@ -60,6 +63,83 @@ def test_business_plan_runs_from_read_only_loader_through_answer_validation(
     assert result.answer.status == "answered"
     assert result.answer.evidence[0].source_table == table_id
     assert result.execution.trace.source_rows == {table_id: 2}
+
+
+def test_pipeline_compares_period_scoped_aggregations_and_records_evidence(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "period-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE sales (product TEXT, amount NUMERIC, sold_at TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, ?, ?)",
+            [
+                ("A", 60, "2026-01-10"),
+                ("A", 40, "2026-01-31"),
+                ("A", 120, "2026-02-28T23:59:00"),
+                ("B", 50, "2026-01-15"),
+                ("B", 25, "2026-02-10"),
+                ("C", 500, "2026-03-10"),
+            ],
+        )
+    table = next(
+        table for table in BusinessDataLoader(business).discover() if table.name == "sales"
+    )
+    table_id = table_identifier(table)
+    product = ColumnRef(table_id, "product")
+    amount = ColumnRef(table_id, "amount")
+    sold_at = ColumnRef(table_id, "sold_at")
+    plan = QueryPlan(
+        base_table=table_id,
+        group_by=(product,),
+        aggregations=(
+            Aggregation(
+                "sum",
+                amount,
+                "previous_revenue",
+                time_range=TimeRange(sold_at, "2026-01-01", "2026-01-31"),
+            ),
+            Aggregation(
+                "sum",
+                amount,
+                "current_revenue",
+                time_range=TimeRange(sold_at, "2026-02-01", "2026-02-28"),
+            ),
+        ),
+        calculations=(
+            Calculation(
+                "percent_change",
+                "current_revenue",
+                "previous_revenue",
+                "growth_percent",
+            ),
+        ),
+        sort=(Sort(product, "asc"),),
+        output_type="table",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.answer_type == "table"
+    assert result.answer.value == [
+        {
+            f"{table_id}.product": "A",
+            "previous_revenue": 100,
+            "current_revenue": 120,
+            "growth_percent": 20,
+        },
+        {
+            f"{table_id}.product": "B",
+            "previous_revenue": 50,
+            "current_revenue": 25,
+            "growth_percent": -50,
+        },
+    ]
+    assert result.answer.evidence[0].columns == ("amount", "product", "sold_at")
+    assert result.answer.evidence[0].filter_summary == "0 filters; time_range=yes"
 
 
 def test_pipeline_distinguishes_no_matching_data_from_internal_failure(

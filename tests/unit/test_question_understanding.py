@@ -44,6 +44,23 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
             "end": "2026-01-31",
             "inclusive_end": False,
         },
+        "aggregations": [
+            {
+                **PLAN["aggregations"][0],
+                "time_range": {
+                    "column": {"table": TABLE, "column": "sold_at"},
+                    "start": "2025-12-01",
+                    "end": "2025-12-31",
+                },
+                "filters": [
+                    {
+                        "column": {"table": TABLE, "column": "status"},
+                        "operator": "eq",
+                        "value": "completed",
+                    }
+                ],
+            }
+        ],
         "metadata": {"reason": "monthly total"},
     }
 
@@ -52,6 +69,10 @@ def test_query_plan_json_decodes_supported_nested_fields() -> None:
     assert plan.filters[0].value == (10, 25)
     assert plan.time_range is not None
     assert plan.time_range.inclusive_end is False
+    aggregation = plan.aggregations[0]
+    assert aggregation.time_range is not None
+    assert aggregation.time_range.start == "2025-12-01"
+    assert aggregation.filters[0].value == "completed"
     assert plan.metadata["reason"] == "monthly total"
 
 
