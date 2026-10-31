@@ -50,7 +50,7 @@
 | Evaluation | Đã có evaluator local với string/list/table aliases và diagnostic reward sum; chưa chạy trên model/validation thực, chưa bao phủ đầy đủ list ranking/tie-break rules, chưa xác minh phép tổng hợp PA chính thức và không công bố điểm PA. |
 | Logging/reproducibility | Có JSONL log và replay xác định QueryPlan đã ghi, đối chiếu answer/trace; chưa tái chạy planner/model, ghi checksum dữ liệu, dependency lock hoặc checkpoint revision. |
 | Docker/submission | Docker CLI chưa có; chưa xác minh Docker guideline, entrypoint/đường dẫn và schema `id/type/answer` với submission validator hiện hành. |
-| Tài liệu cuộc thi | Portal xác nhận mô tả cấp cao và `.jsonl`; training rulebook có format/reward tham khảo; regulations chỉ trả SPA shell. Giới hạn 15B, ngày phát hành, license, quy tắc offline/dữ liệu, cách tổng hợp PA và Docker vẫn cần văn bản chính thức để xác minh. |
+| Tài liệu cuộc thi | Portal xác nhận mô tả cấp cao và `.jsonl`; training rulebook có format/reward tham khảo. Official English/Vietnamese regulations PDF đã tìm thấy qua portal (`https://dl-challenge.zalo.ai/zalo-ai-challenge-regulations-en.pdf` và `...-vi.pdf`), nhưng chưa trích xuất được nội dung để xác minh. Giới hạn 15B, cutoff/ngày phát hành, license, quy tắc offline/dữ liệu, cách tổng hợp PA và Docker vẫn cần đối chiếu văn bản chính thức. |
 
 ## Dữ liệu, tài nguyên và an toàn
 
