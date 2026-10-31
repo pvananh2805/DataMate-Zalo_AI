@@ -326,6 +326,42 @@ def test_pipeline_preserves_exact_zero_count_for_no_matching_rows(
     assert result.execution.trace.filtered_rows == 0
 
 
+def test_pipeline_counts_distinct_orders_across_repeated_line_items(
+    tmp_path: Path,
+) -> None:
+    business = tmp_path / "order-business"
+    business.mkdir()
+    with sqlite3.connect(business / "shop.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE order_lines (order_id TEXT, amount INTEGER)"
+        )
+        connection.executemany(
+            "INSERT INTO order_lines VALUES (?, ?)",
+            [("O-1", 10), ("O-1", 20), ("O-2", 30), (None, 40)],
+        )
+    table = next(
+        table
+        for table in BusinessDataLoader(business).discover()
+        if table.name == "order_lines"
+    )
+    table_id = table_identifier(table)
+    order_id = ColumnRef(table_id, "order_id")
+    plan = QueryPlan(
+        base_table=table_id,
+        aggregations=(
+            Aggregation("count_distinct", order_id, "order_count"),
+        ),
+        output_type="number",
+    )
+
+    result = execute_business_plan(business, plan)
+
+    assert result.answer.answer_type == "number"
+    assert result.answer.value == 2
+    assert result.answer.status == "answered"
+    assert result.execution.trace.filtered_rows == 4
+
+
 def test_csv_plan_uses_explicit_locale_normalization_without_guessing(
     tmp_path: Path,
 ) -> None:

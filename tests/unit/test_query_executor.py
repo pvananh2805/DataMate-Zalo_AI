@@ -70,6 +70,54 @@ def test_streamed_aggregation_uses_decimal_and_null_semantics() -> None:
     assert result.trace.group_count == 2
 
 
+def test_count_distinct_counts_non_null_business_keys_once() -> None:
+    table = "order_lines"
+    order_id = ColumnRef(table, "order_id")
+    plan = QueryPlan(
+        base_table=table,
+        aggregations=(
+            Aggregation("count_distinct", order_id, "order_count"),
+        ),
+    )
+
+    result = execute_query_plan(
+        plan,
+        catalog={table: ("order_id", "line_amount")},
+        sources={
+            table: [
+                ("A", Decimal(10)),
+                ("A", Decimal(20)),
+                ("B", Decimal(30)),
+                (None, Decimal(40)),
+            ]
+        },
+    )
+
+    assert result.rows == ({"order_count": 2},)
+
+
+def test_count_distinct_is_bounded_and_reports_resource_limit() -> None:
+    table = "order_lines"
+    order_id = ColumnRef(table, "order_id")
+    plan = QueryPlan(
+        base_table=table,
+        aggregations=(
+            Aggregation("count_distinct", order_id, "order_count"),
+        ),
+    )
+
+    with pytest.raises(
+        QueryExecutionError,
+        match="Distinct value count exceeds configured limit 2",
+    ):
+        execute_query_plan(
+            plan,
+            catalog={table: ("order_id",)},
+            sources={table: [("A",), ("B",), ("C",)]},
+            max_distinct_values=2,
+        )
+
+
 def test_left_join_keeps_unmatched_rows_and_aggregates_exactly() -> None:
     orders = "orders"
     customers = "customers"

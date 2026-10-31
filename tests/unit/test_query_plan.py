@@ -150,6 +150,17 @@ def test_plan_validates_scoped_aggregation_filters_and_dates() -> None:
     assert any("start must not be after end" in issue for issue in error.value.issues)
 
 
+def test_count_distinct_requires_a_valid_key_column() -> None:
+    orders = "orders.csv::orders"
+    plan = QueryPlan(
+        base_table=orders,
+        aggregations=(Aggregation("count_distinct", None, "orders"),),
+    )
+
+    with pytest.raises(PlanValidationError, match="count_distinct requires a column"):
+        validate_query_plan(plan, CATALOG)
+
+
 def test_plan_rejects_unknown_time_bucket_columns_and_granularities() -> None:
     orders = "orders.csv::orders"
     plan = QueryPlan(

@@ -248,7 +248,10 @@ def execute_business_plan(
             and not plan.group_by
             and not plan.time_buckets
             and not plan.calculations
-            and any(item.function == "count" for item in plan.aggregations)
+            and any(
+                item.function in {"count", "count_distinct"}
+                for item in plan.aggregations
+            )
         )
         has_scoped_sum = (
             plan.output_type == "number"

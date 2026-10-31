@@ -50,6 +50,7 @@ class _AggregateState:
     scope_matches: int = 0
     total: Decimal = Decimal(0)
     extreme: object = None
+    distinct_values: set[tuple[type, object]] | None = None
 
 
 def _column_key(ref: ColumnRef) -> str:
@@ -247,10 +248,12 @@ def _aggregate(
     time_coverage: Mapping[str, Sequence[date | None]],
     *,
     max_groups: int,
+    max_distinct_values: int,
 ) -> tuple[list[dict[str, object]], int]:
     grouped: dict[tuple[object, ...], tuple[tuple[object, ...], list[_AggregateState]]] = {}
     group_refs = plan.group_by
     time_buckets = plan.time_buckets
+    distinct_value_count = 0
 
     for context in rows:
         matched_aggregations = [
@@ -319,6 +322,26 @@ def _aggregate(
             if aggregation.function == "count":
                 if aggregation.column is None or value is not None:
                     state.count += 1
+            elif aggregation.function == "count_distinct":
+                if value is not None:
+                    try:
+                        distinct_key = (type(value), value)
+                        if state.distinct_values is None:
+                            state.distinct_values = set()
+                        if distinct_key not in state.distinct_values:
+                            if distinct_value_count >= max_distinct_values:
+                                raise QueryExecutionError(
+                                    "Distinct value count exceeds configured limit "
+                                    f"{max_distinct_values}"
+                                )
+                            state.distinct_values.add(distinct_key)
+                            state.count += 1
+                            distinct_value_count += 1
+                    except TypeError as exc:
+                        raise QueryExecutionError(
+                            f"Distinct values for {aggregation.alias!r} must be "
+                            "hashable scalars"
+                        ) from exc
             elif value is not None:
                 if aggregation.function in {"sum", "avg"}:
                     number = _to_decimal(value, alias=aggregation.alias)
@@ -344,7 +367,7 @@ def _aggregate(
         and plan.time_range is not None
         and time_buckets[0].column == plan.time_range.column
         and len(plan.aggregations) == 1
-        and plan.aggregations[0].function in {"sum", "count"}
+        and plan.aggregations[0].function in {"sum", "count", "count_distinct"}
     ):
         bucket = time_buckets[0]
         coverage = time_coverage.get(
@@ -404,7 +427,7 @@ def _aggregate(
             }
         )
         for aggregation, state in zip(plan.aggregations, states, strict=True):
-            if aggregation.function == "count":
+            if aggregation.function in {"count", "count_distinct"}:
                 value: object = state.count
             elif state.count == 0 and state.scope_matches == 0:
                 value = Decimal(0)
@@ -476,12 +499,14 @@ def execute_query_plan(
     max_join_rows: int = 100_000,
     max_groups: int = 100_000,
     max_result_rows: int = 10_000,
+    max_distinct_values: int = 100_000,
 ) -> ExecutionResult:
     """Run allow-listed operations over streamed rows without executing SQL/code."""
     for name, value in (
         ("max_join_rows", max_join_rows),
         ("max_groups", max_groups),
         ("max_result_rows", max_result_rows),
+        ("max_distinct_values", max_distinct_values),
     ):
         if value < 1:
             raise ValueError(f"{name} must be positive")
@@ -654,6 +679,7 @@ def execute_query_plan(
             column_indexes,
             time_coverage,
             max_groups=max_groups,
+            max_distinct_values=max_distinct_values,
         )
         _calculate(rows, plan.calculations)
     else:

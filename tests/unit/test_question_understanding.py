@@ -123,6 +123,7 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "amount tính bằng VND" in prompt
     assert "2026-04-09" in prompt
     assert "business_rules hiện chưa có executor" in prompt
+    assert "count_distinct" in prompt
 
 
 def test_json_plan_adapter_validates_against_discovered_schema() -> None:
@@ -139,6 +140,30 @@ def test_json_plan_adapter_validates_against_discovered_schema() -> None:
 
     assert plan.base_table == TABLE
     assert prompts and "Tổng doanh thu?" in prompts[0]
+
+
+def test_json_plan_adapter_accepts_count_distinct_for_repeated_order_lines() -> None:
+    plan_data = {
+        "base_table": TABLE,
+        "aggregations": [
+            {
+                "function": "count_distinct",
+                "column": {"table": TABLE, "column": "order_id"},
+                "alias": "order_count",
+            }
+        ],
+        "output_type": "number",
+    }
+
+    plan = JsonPlanAdapter(
+        lambda _: json.dumps(plan_data),
+        model_name="local-test",
+    ).create_plan(
+        "Có bao nhiêu đơn?",
+        QuestionContext(schema={TABLE: ("order_id", "amount")}),
+    )
+
+    assert plan.aggregations[0].function == "count_distinct"
 
 
 def test_json_plan_adapter_rejects_hallucinated_columns_and_non_json() -> None:

@@ -8,7 +8,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal, Mapping
 
-AggregationKind = Literal["sum", "count", "avg", "min", "max"]
+AggregationKind = Literal["sum", "count", "count_distinct", "avg", "min", "max"]
 CalculationKind = Literal["difference", "ratio", "ratio_percent", "percent_change"]
 TimeBucketKind = Literal["day", "week", "month", "quarter", "year"]
 FilterOperator = Literal[
@@ -50,7 +50,7 @@ _FILTER_OPERATORS = {
     "is_null",
     "not_null",
 }
-_AGGREGATIONS = {"sum", "count", "avg", "min", "max"}
+_AGGREGATIONS = {"sum", "count", "count_distinct", "avg", "min", "max"}
 _CALCULATIONS = {"difference", "ratio", "ratio_percent", "percent_change"}
 _JOIN_KINDS = {"inner", "left"}
 _ANSWER_TYPES = {
