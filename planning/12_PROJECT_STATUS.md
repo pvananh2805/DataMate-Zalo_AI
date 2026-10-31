@@ -1,7 +1,7 @@
 # Trạng thái dự án DataMate
 
 **Cập nhật:** 2026-10-31
-**Mốc code nền trước vòng Solve-First:** `365ed71`; thay đổi vòng này chưa commit/push.
+**Mốc nền ban đầu của Solve-First:** `365ed71`. Các milestone đã xác minh được commit/push lên `origin/master`; không stage dữ liệu train và planning artifacts ngoài phạm vi.
 
 ## Cập nhật Solve-First
 
@@ -20,7 +20,7 @@
 - Integration test theo rulebook tính tỷ lệ đơn huỷ trên tổng đơn duy nhất (mỗi đơn có nhiều dòng; denominator gồm mọi trạng thái); xác nhận QueryPlan filters + scoped `count_distinct` + `ratio_percent` chạy xuyên SQLite → pipeline.
 - Đã sửa output bảng để `selected_columns` là cột hiển thị, còn `group_by` có thể chứa mã chỉ dùng xếp hạng/tie-break; pipeline, serializer và evaluator giữ thứ tự tie-break mà không lộ mã phụ. Prompt planner nêu thứ tự metric giảm dần, mã tăng dần; nếu thiếu mã thì tên tăng dần. Model thật chưa được benchmark nên chưa tuyên bố đã tuân thủ.
 - Đã sửa evaluator table: so khớp dòng không phụ thuộc thứ tự nhưng trước đó ghép tham lam, có thể báo sai khi alias các dòng giao nhau dù tồn tại cách ghép hợp lệ. Hiện dùng tìm ghép hai phía trên các dòng tương thích; test tái hiện alias chồng lấp.
-- Kiểm chứng gần nhất: count-distinct unit/plan/adapter/SQLite **5 passed** và cancellation-rate integration **1 passed**; targeted time-bucket nhiều measure/coverage **14 passed**; targeted submission/evaluator **24 passed**; tie-break projection/prompt/evaluator **10 passed**; alias overlapping table **3 passed**; kiểm tra float/percent **4 passed**, list/table **1 passed**, Decimal cùng float **1 passed**; toàn bộ suite **159 passed**; `compileall -q src tests scripts` và `git diff --check` thành công. Đã xác nhận bucket tháng chỉ có giá trị NULL vẫn giữ SUM=NULL, khác tháng trống SUM=0. Không mở public test hoặc fine-tune.
+- Kiểm chứng gần nhất: count-distinct unit/plan/adapter/SQLite **5 passed** và cancellation-rate integration **1 passed**; targeted time-bucket nhiều measure/coverage **14 passed**; targeted submission/evaluator **24 passed**; tie-break projection/prompt/evaluator **10 passed**, bảng rỗng giấu khóa tie-break **2 passed**; alias overlapping table **3 passed**; kiểm tra float/percent **4 passed**, list/table **1 passed**, Decimal cùng float **1 passed**; toàn bộ suite **160 passed**; `compileall -q src tests scripts` và `git diff --check` thành công. Đã xác nhận bucket tháng chỉ có giá trị NULL vẫn giữ SUM=NULL, khác tháng trống SUM=0. Không mở public test hoặc fine-tune.
 - Các khoảng trống ưu tiên tiếp: lấp bucket trống khi có nhiều chiều group, thực thi business rules có test, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
 
 ## Đã triển khai và kiểm chứng
