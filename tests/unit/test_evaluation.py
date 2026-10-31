@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from datamate.evaluation import evaluate_predictions
 
 
@@ -9,6 +11,44 @@ def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
         "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
         encoding="utf-8",
     )
+
+
+@pytest.mark.parametrize(
+    ("answer_type", "gold", "prediction", "expected_matches"),
+    [
+        ("number", 0.3, 0.30000000000000004, 1),
+        ("percent", 12.4, 12.400000000000002, 1),
+        ("number", 0.3, 0.3000000001, 0),
+        ("number", 9007199254740992, 9007199254740993, 0),
+    ],
+)
+def test_numeric_evaluation_ignores_only_one_ulp_float_error(
+    tmp_path: Path,
+    answer_type: str,
+    gold: int | float,
+    prediction: int | float,
+    expected_matches: int,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [{"id": "q1", "type": answer_type, "answer": gold}],
+    )
+    _write_jsonl(
+        prediction_path,
+        [{"id": "q1", "type": answer_type, "answer": prediction}],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == expected_matches
 
 
 def test_local_evaluation_reports_types_missing_extra_and_unanswerable(

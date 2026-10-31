@@ -701,6 +701,38 @@ def _string_matches(
     }
 
 
+def _numeric_equal(gold: object, predicted: object) -> bool:
+    if isinstance(gold, bool) or isinstance(predicted, bool):
+        return False
+    try:
+        expected = Decimal(str(gold))
+        actual = Decimal(str(predicted))
+    except (InvalidOperation, ValueError):
+        return False
+    if not expected.is_finite() or not actual.is_finite():
+        return False
+    if expected == actual:
+        return True
+    if (
+        expected == expected.to_integral_value()
+        and actual == actual.to_integral_value()
+    ):
+        return False
+    try:
+        expected_float = float(expected)
+        actual_float = float(actual)
+    except (OverflowError, ValueError):
+        return False
+    if (
+        not math.isfinite(expected_float)
+        or not math.isfinite(actual_float)
+        or expected_float == actual_float
+    ):
+        return False
+    tolerance = max(math.ulp(expected_float), math.ulp(actual_float))
+    return abs(expected_float - actual_float) <= tolerance
+
+
 def _list_equal(
     gold: object,
     predicted: object,
@@ -741,6 +773,8 @@ def _same_answer_value(
     allow_numeric_strings: bool,
     gold_aliases: str,
 ) -> bool:
+    if answer_type in {"number", "percent"}:
+        return _numeric_equal(gold_value, predicted_value)
     if answer_type == "string":
         try:
             gold = json.loads(gold_value)
@@ -793,16 +827,7 @@ def _structured_equal(
             isinstance(predicted, str) and not allow_numeric_strings
         ):
             return False
-        try:
-            expected_number = Decimal(str(gold))
-            predicted_number = Decimal(str(predicted))
-        except (InvalidOperation, ValueError):
-            return False
-        return (
-            expected_number.is_finite()
-            and predicted_number.is_finite()
-            and expected_number == predicted_number
-        )
+        return _numeric_equal(gold, predicted)
     if gold is None:
         return predicted is None
     if isinstance(gold, str):

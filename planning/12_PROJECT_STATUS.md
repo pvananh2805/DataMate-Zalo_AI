@@ -14,7 +14,8 @@
 - `ratio_percent` và `percent_change` được làm tròn đúng 2 chữ số thập phân theo `ROUND_HALF_UP`, như rulebook training yêu cầu.
 - Test hồi quy cover date/datetime, timestamp cuối ngày, cận kết thúc độc quyền, lỗi định dạng ngày, giảm phần trăm âm và tie-break top-K, so sánh hai kỳ, time bucket calendar, list/table output, cũng như bảng rỗng.
 - Đã sửa lệch rulebook §7: reason của `unanswerable` là tùy chọn, nên submission serializer và evaluator chấp nhận payload có hoặc không có reason (nếu có phải là chuỗi); đã có test riêng.
-- Kiểm chứng gần nhất: targeted time-bucket/coverage **13 passed**; targeted submission/evaluator **24 passed**; toàn bộ suite **144 passed**; `compileall -q src tests scripts` và `git diff --check` thành công. Đã xác nhận bucket tháng chỉ có giá trị NULL vẫn giữ SUM=NULL, khác tháng trống SUM=0. Không mở public test hoặc fine-tune.
+- Evaluator số trước đây so Decimal tuyệt đối, không bỏ qua sai số dấu phẩy động như §9 yêu cầu. Hiện chấp nhận khác biệt tối đa một ULP cho số không nguyên; số nguyên tiền/số đếm vẫn so chính xác, và sai khác lớn hơn vẫn bị tính sai. Đây là evaluator local, không xác nhận công thức PA chính thức.
+- Kiểm chứng gần nhất: targeted time-bucket/coverage **13 passed**; targeted submission/evaluator **24 passed**; kiểm tra float/percent **4 passed**; toàn bộ suite **148 passed**; `compileall -q src tests scripts` và `git diff --check` thành công. Đã xác nhận bucket tháng chỉ có giá trị NULL vẫn giữ SUM=NULL, khác tháng trống SUM=0. Không mở public test hoặc fine-tune.
 - Các khoảng trống ưu tiên tiếp: lấp bucket trống cho nhiều chiều group/nhiều aggregation, thực thi business rules có test, và benchmark question-to-plan/unanswerable bằng prediction hợp lệ.
 
 ## Đã triển khai và kiểm chứng
