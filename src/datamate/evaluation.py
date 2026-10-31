@@ -217,9 +217,30 @@ def _load_gold(connection: sqlite3.Connection, source: Path) -> tuple[int, int, 
                     )
                 string_alias_count += len(aliases)
                 string_alias_questions += bool(aliases)
-                answer_aliases = json.dumps(aliases, ensure_ascii=False)
+            elif answer_type in {"list", "table"}:
+                values = (
+                    record.get("answer")
+                    if answer_type == "list"
+                    else record["answer"]["rows"]
+                )
+                if aliases and len(aliases) != len(values):
+                    raise EvaluationError(
+                        f"{context}: aliases must align with answer items"
+                    )
+                if any(
+                    not isinstance(item_aliases, list)
+                    or any(not isinstance(alias, str) for alias in item_aliases)
+                    for item_aliases in aliases
+                ):
+                    raise EvaluationError(
+                        f"{context}: item aliases must be arrays of strings"
+                    )
             else:
-                answer_aliases = "[]"
+                if aliases:
+                    raise EvaluationError(
+                        f"{context}: aliases are unsupported for {answer_type}"
+                    )
+            answer_aliases = json.dumps(aliases, ensure_ascii=False)
             try:
                 connection.execute(
                     "INSERT INTO gold VALUES (?, ?, ?, ?)",
@@ -287,6 +308,7 @@ def _table_equal(
     predicted: object,
     *,
     allow_numeric_strings: bool,
+    aliases: object,
 ) -> bool:
     if not _is_submission_table(gold) or not _is_submission_table(predicted):
         return False
@@ -305,16 +327,32 @@ def _table_equal(
     unmatched_rows = list(predicted["rows"])
     if len(gold["rows"]) != len(unmatched_rows):
         return False
-    for gold_row in gold["rows"]:
+    table_aliases = aliases if isinstance(aliases, list) else []
+    if table_aliases and len(table_aliases) != len(gold["rows"]):
+        return False
+    for row_index, gold_row in enumerate(gold["rows"]):
+        row_aliases = (
+            table_aliases[row_index]
+            if table_aliases and isinstance(table_aliases[row_index], list)
+            else []
+        )
         match_index = next(
             (
                 index
                 for index, predicted_row in enumerate(unmatched_rows)
                 if all(
-                    _structured_equal(
-                        gold_value,
-                        predicted_row[column_indexes[position]],
-                        allow_numeric_strings=allow_numeric_strings,
+                    (
+                        _string_matches(
+                            predicted_row[column_indexes[position]],
+                            gold_value,
+                            row_aliases if position == 0 else [],
+                        )
+                        if isinstance(gold_value, str)
+                        else _structured_equal(
+                            gold_value,
+                            predicted_row[column_indexes[position]],
+                            allow_numeric_strings=allow_numeric_strings,
+                        )
                     )
                     for position, gold_value in enumerate(gold_row)
                 )
@@ -608,6 +646,8 @@ def _aggregate_report(
         "metric": "local_strict_exact_match_not_official_PA",
         "official_pa_computed": False,
         "aliases_compared_for_strings": True,
+        "aliases_compared_for_lists": True,
+        "aliases_compared_for_table_rows": True,
         "string_alias_count": string_alias_count,
         "string_alias_questions": string_alias_questions,
         "gold_count": gold_count,
@@ -618,9 +658,9 @@ def _aggregate_report(
         "abstentions": abstentions,
         "strict_local_reward_sum": exact_matches - incorrect_predictions,
         "strict_local_reward_scope": (
-            "Applies +1/-1/0 to local outcomes with provided string aliases and "
-            "case/whitespace/punctuation normalization. List/table comparison "
-            "rules and list aliases are incomplete; this is not the official "
+            "Applies +1/-1/0 to local outcomes with aliases for strings, list "
+            "items and table row names. Case/whitespace/punctuation are normalized; "
+            "some ranking/order rules remain incomplete. This is not the official "
             "reward or aggregate PA."
         ),
         "answer_type_matches": type_matches,
@@ -641,6 +681,54 @@ def _aggregate_report(
     }
 
 
+def _string_matches(
+    predicted: object,
+    gold: object,
+    aliases: object,
+) -> bool:
+    if not isinstance(predicted, str) or not isinstance(gold, str):
+        return False
+    acceptable = [gold]
+    if isinstance(aliases, list):
+        acceptable.extend(alias for alias in aliases if isinstance(alias, str))
+    normalized_prediction = _normalize_string(predicted)
+    return normalized_prediction in {
+        _normalize_string(value) for value in acceptable
+    }
+
+
+def _list_equal(
+    gold: object,
+    predicted: object,
+    *,
+    allow_numeric_strings: bool,
+    aliases: object,
+) -> bool:
+    if not isinstance(gold, list) or not isinstance(predicted, list):
+        return False
+    if len(gold) != len(predicted):
+        return False
+    item_aliases = aliases if isinstance(aliases, list) else []
+    if item_aliases and len(item_aliases) != len(gold):
+        return False
+    for index, (gold_item, predicted_item) in enumerate(zip(gold, predicted)):
+        aliases_for_item = (
+            item_aliases[index]
+            if item_aliases and isinstance(item_aliases[index], list)
+            else []
+        )
+        if isinstance(gold_item, str):
+            if not _string_matches(predicted_item, gold_item, aliases_for_item):
+                return False
+        elif not _structured_equal(
+            gold_item,
+            predicted_item,
+            allow_numeric_strings=allow_numeric_strings,
+        ):
+            return False
+    return True
+
+
 def _same_answer_value(
     answer_type: str,
     gold_value: str,
@@ -658,33 +746,33 @@ def _same_answer_value(
             return False
         if not isinstance(gold, str) or not isinstance(predicted, str):
             return False
-        return _normalize_string(predicted) in {
-            _normalize_string(value)
-            for value in [gold, *aliases]
-            if isinstance(value, str)
-        }
+        return _string_matches(predicted, gold, aliases)
     if answer_type == "table":
         try:
             gold = json.loads(gold_value)
             predicted = json.loads(predicted_value)
+            aliases = json.loads(gold_aliases)
         except json.JSONDecodeError:
             return False
         return _table_equal(
             gold,
             predicted,
             allow_numeric_strings=allow_numeric_strings,
+            aliases=aliases,
         )
     if answer_type != "list":
         return gold_value == predicted_value
     try:
         gold = json.loads(gold_value)
         predicted = json.loads(predicted_value)
+        aliases = json.loads(gold_aliases)
     except json.JSONDecodeError:
         return False
-    return _structured_equal(
+    return _list_equal(
         gold,
         predicted,
         allow_numeric_strings=allow_numeric_strings,
+        aliases=aliases,
     )
 
 

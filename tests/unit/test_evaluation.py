@@ -451,3 +451,104 @@ def test_table_evaluation_normalizes_internal_run_log_rows(
     )
 
     assert report["exact_matches"] == 1
+
+
+def test_list_aliases_match_the_corresponding_item_without_reordering(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "list",
+                "answer": ["Trà sữa", "Cà phê"],
+                "alias": [["Tra sua"], []],
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [{"id": "q1", "type": "list", "answer": ["TRA-SUA!", "Cà phê"]}],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+    assert report["aliases_compared_for_lists"] is True
+
+
+def test_list_evaluation_keeps_order_significant(tmp_path: Path) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [{"id": "q1", "type": "list", "answer": ["Trà", "Cà phê"]}],
+    )
+    _write_jsonl(
+        prediction_path,
+        [{"id": "q1", "type": "list", "answer": ["Cà phê", "Trà"]}],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 0
+
+
+def test_table_aliases_match_row_name_after_unordered_row_matching(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "gold").mkdir()
+    (tmp_path / "predictions").mkdir()
+    gold_path = tmp_path / "gold" / "answers.jsonl"
+    prediction_path = tmp_path / "predictions" / "submission.jsonl"
+    _write_jsonl(
+        gold_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["name", "revenue"],
+                    "rows": [["Trà", 10], ["Cà phê", 20]],
+                },
+                "alias": [["Tra"], []],
+            }
+        ],
+    )
+    _write_jsonl(
+        prediction_path,
+        [
+            {
+                "id": "q1",
+                "type": "table",
+                "answer": {
+                    "columns": ["name", "revenue"],
+                    "rows": [["Cà phê", 20], ["TRA!", 10]],
+                },
+            }
+        ],
+    )
+
+    report = evaluate_predictions(
+        gold_path,
+        prediction_path,
+        tmp_path / "reports" / "report.json",
+    )
+
+    assert report["exact_matches"] == 1
+    assert report["aliases_compared_for_table_rows"] is True
