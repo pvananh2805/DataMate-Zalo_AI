@@ -1,4 +1,5 @@
 import json
+from datetime import date, timedelta
 
 import pytest
 
@@ -159,6 +160,29 @@ def test_query_plan_json_rejects_malformed_or_unsafe_shapes(raw: str) -> None:
         query_plan_from_json(raw)
 
 
+def test_query_plan_json_rejects_excessive_nesting() -> None:
+    raw = "[" * 20_000 + "0" + "]" * 20_000
+
+    with pytest.raises(QueryPlanFormatError, match="too deeply nested"):
+        query_plan_from_json(raw)
+
+
+def test_query_plan_json_accepts_standalone_json_code_fences() -> None:
+    raw = "```json\n" + json.dumps(PLAN) + "\n```"
+
+    assert query_plan_from_json(raw).base_table == TABLE
+
+
+def test_query_plan_json_does_not_extract_json_from_thinking_or_prose() -> None:
+    for raw in (
+        "<think>reasoning</think>\n" + json.dumps(PLAN),
+        "Here is the plan:\n" + json.dumps(PLAN),
+        "```json\n" + json.dumps(PLAN) + "\n```\nextra text",
+    ):
+        with pytest.raises(QueryPlanFormatError):
+            query_plan_from_json(raw)
+
+
 def test_planning_prompt_carries_schema_and_reference_date() -> None:
     prompt = build_planning_prompt(
         "doanh thu tháng này",
@@ -182,17 +206,148 @@ def test_planning_prompt_carries_schema_and_reference_date() -> None:
     assert "# Nguyên tắc" in prompt
     assert "amount tính bằng VND" in prompt
     assert "2026-04-09" in prompt
-    assert "business_rules hiện chưa có executor" in prompt
-    assert "group_exclusions" in prompt
-    assert "không thay bằng filter bỏ riêng dòng đó" in prompt
+    assert "business_rules luôn là []" in prompt
+    assert "group_exclusions khi phải loại cả nhóm" in prompt
     assert "count_distinct" in prompt
-    assert "không AVG trực tiếp" in prompt
-    assert "unit_conversion khai báo" in prompt
-    assert "target_unit=null" in prompt
-    assert "đơn vị không có dòng mapping" in prompt
-    assert "count_groups=true" in prompt
-    assert "mã tăng dần" in prompt
-    assert "time_bucket làm giá trị scalar" in prompt
+    assert "unit_conversion" in prompt
+    assert "ranking giảm dần" in prompt.casefold()
+    assert "time_buckets" in prompt
+    assert "partial: explicit dates/months" in prompt
+
+
+def test_planning_prompt_selects_rulebook_sections_relevant_to_question() -> None:
+    rulebook = (
+        "Mặc định dùng các quy tắc trong tài liệu.\n"
+        "## Công nợ\nĐơn ghi nợ và tuổi nợ tính từ ngày đặt.\n"
+        "## Kho hàng\nTồn kho cuối ngày và giá vốn theo quy tắc riêng.\n"
+        "## Quy tắc cho mọi câu hỏi\nNếu dữ liệu không đủ thì không suy đoán.\n"
+        "## Phụ lục không liên quan\n"
+        + ("Thuật ngữ kỹ thuật không liên quan đến câu hỏi. " * 300)
+    )
+    prompt = build_planning_prompt(
+        "Tuổi nợ của khách hàng là bao nhiêu?",
+        QuestionContext(
+            schema={"orders.csv::orders": ("order_id", "due_date")},
+            rulebook=rulebook,
+        ),
+    )
+    payload_text = prompt.split("Ngữ cảnh JSON:\n", 1)[1].split(
+        "\nQueryPlan JSON:\n", 1
+    )[0]
+    excerpt = json.loads(payload_text)["rulebook"]
+
+    assert "## Công nợ" in excerpt
+    assert "## Kho hàng" not in excerpt
+    assert "các mục khác đã lược bỏ" in excerpt
+
+
+def test_planning_prompt_avoids_unrelated_rulebook_topics() -> None:
+    rulebook = (
+        "Quy tắc áp dụng theo nội dung câu hỏi.\n"
+        "## 1. Đơn hàng và doanh thu\nQuy định đơn hàng hợp lệ.\n"
+        "## 2. Thời gian\nTuần bắt đầu vào thứ Hai.\n"
+        "## 3. Xếp hạng\nQuy tắc xếp hạng và đơn vị sản phẩm.\n"
+        "## 5. Kho, nhập hàng, giá vốn\nQuy tắc tồn kho và giá vốn.\n"
+        "### Nhà thuốc\nQuy tắc riêng cho thuốc.\n"
+        "### Vật liệu xây dựng\nQuy tắc riêng cho vật liệu.\n"
+        "## 7. Không trả lời được\nKhông suy đoán khi thiếu dữ liệu.\n"
+        "## 8. Cách ghi trong file\nTên bảng và cột theo dữ liệu nguồn.\n"
+        "## 9. Đáp án và chấm điểm\nQuy định định dạng đáp án.\n"
+        "## 10. Từ ngữ\nĐơn vị sản phẩm.\n"
+        "## Phụ lục\n"
+        + ("Thuật ngữ kỹ thuật không liên quan. " * 300)
+    )
+    prompt = build_planning_prompt(
+        "Tháng 5/2026 bán ra bao nhiêu cây Ống PVC Bình Minh D50 cây 4m?",
+        QuestionContext(
+            schema={"sales.csv::sales": ("product", "quantity", "sold_at")},
+            business_readme="Loại hình: vật liệu xây dựng",
+            rulebook=rulebook,
+        ),
+    )
+    payload_text = prompt.split("Ngữ cảnh JSON:\n", 1)[1].split(
+        "\nQueryPlan JSON:\n", 1
+    )[0]
+    excerpt = json.loads(payload_text)["rulebook"]
+
+    assert "## 1. Đơn hàng và doanh thu" in excerpt
+    assert "## 2. Thời gian" in excerpt
+    assert "## 3. Xếp hạng" in excerpt
+    assert "### Vật liệu xây dựng" in excerpt
+    assert "## 7. Không trả lời được" in excerpt
+    assert "## 8. Cách ghi trong file" in excerpt
+    assert "## 10. Từ ngữ" in excerpt
+    assert "## 5. Kho, nhập hàng, giá vốn" not in excerpt
+    assert "### Nhà thuốc" not in excerpt
+    assert "## 9. Đáp án và chấm điểm" not in excerpt
+
+
+def test_planning_prompt_bounds_large_calendar_to_relevant_rows() -> None:
+    first_day = date(2024, 1, 1)
+    rows = []
+    for offset in range(1_461):
+        day = first_day + timedelta(days=offset)
+        rows.append(
+            {
+                "date": day.isoformat(),
+                "weekday": str(day.weekday()),
+                "lunar_day": str(day.day),
+                "lunar_month": str(day.month),
+                "lunar_year": str(day.year),
+                "lunar_leap": "false",
+                "holiday": "Holiday" if day.day == 1 else "",
+            }
+        )
+    prompt = build_planning_prompt(
+        "Doanh thu ngày 2026-01-12?",
+        QuestionContext(
+            schema={TABLE: ("amount",)},
+            as_of_date="2026-01-15",
+            calendar_columns=(
+                "date",
+                "weekday",
+                "lunar_day",
+                "lunar_month",
+                "lunar_year",
+                "lunar_leap",
+                "holiday",
+            ),
+            calendar_rows=tuple(rows),
+        ),
+    )
+
+    payload_text = prompt.split("Ngữ cảnh JSON:\n", 1)[1].split(
+        "\nQueryPlan JSON:\n", 1
+    )[0]
+    payload = json.loads(payload_text)
+    calendar = payload["calendar"]
+    included_dates = {row[0] for row in calendar["rows"]}
+    original_calendar_size = len(
+        json.dumps(
+            {
+                "columns": [
+                    "date",
+                    "weekday",
+                    "lunar_day",
+                    "lunar_month",
+                    "lunar_year",
+                    "lunar_leap",
+                    "holiday",
+                ],
+                "rows": [dict(row) for row in rows],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+    assert original_calendar_size > 100_000
+    assert len(json.dumps(calendar, ensure_ascii=False, separators=(",", ":"))) <= 8_192
+    assert len(calendar["rows"]) < 100
+    assert "2026-01-12" in included_dates
+    assert "2024-06-01" in included_dates
+    assert "2024-01-02" not in included_dates
+    assert "missing date is unavailable" in calendar["coverage"]
 
 
 def test_json_plan_adapter_validates_against_discovered_schema() -> None:
@@ -255,7 +410,7 @@ def test_json_plan_adapter_rejects_hallucinated_columns_and_non_json() -> None:
         ).create_plan("Tổng?", context)
     with pytest.raises(QuestionUnderstandingError, match="valid JSON"):
         JsonPlanAdapter(
-            lambda _: "```json\n{}\n```",
+            lambda _: "not JSON",
             model_name="local-test",
         ).create_plan("Tổng?", context)
 
@@ -291,6 +446,17 @@ def test_json_plan_adapter_accepts_only_explicit_non_answer_statuses() -> None:
 
     assert plan.output_type == "unanswerable"
     assert plan.metadata["status"] == "ambiguous"
+    no_table_abstention = {
+        "base_table": None,
+        "output_type": "abstain",
+        "metadata": {"status": "abstained", "reason": "Không thể xác định."},
+    }
+    no_table_plan = JsonPlanAdapter(
+        lambda _: json.dumps(no_table_abstention),
+        model_name="local-test",
+    ).create_plan("Câu hỏi không thuộc nghiệp vụ", context)
+    assert no_table_plan.base_table is None
+
     ambiguous_plan["metadata"]["status"] = "no_data"
     with pytest.raises(QuestionUnderstandingError, match="metadata.status"):
         JsonPlanAdapter(
