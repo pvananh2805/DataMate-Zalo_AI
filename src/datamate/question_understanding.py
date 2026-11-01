@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .plan_serialization import QueryPlanFormatError, query_plan_from_json
+from .query_executor import _parse_flexible_date
 from .query_plan import (
     Aggregation,
     ColumnRef,
@@ -832,26 +833,41 @@ def heal_query_plan(
         if val_str in temporal_phrases:
             continue
         res_col = resolve_filter_col(f.column, f.value)
+        if res_col is None:
+            continue
+        v_cols = list(schema.get(res_col.table, ()))
+        if res_col.column not in v_cols:
+            d_val = _parse_flexible_date(f.value)
+            if d_val is not None:
+                date_cols = [c for c in v_cols if any(d in c.lower() for d in ("ngày", "thời gian", "date", "time"))]
+                if date_cols:
+                    res_col = ColumnRef(table=res_col.table, column=date_cols[0])
+            if res_col.column not in v_cols:
+                continue
         filtered_filters.append(Filter(column=res_col, operator=f.operator, value=f.value))
     new_filters = tuple(filtered_filters)
     new_group_by = tuple(resolve_col(g) for g in plan.group_by)
     if plan.output_type == "number":
         new_group_by = ()
 
-    new_aggs = tuple(
-        Aggregation(
-            function=a.function,
-            column=resolve_col(a.column),
-            alias=a.alias,
-            filters=tuple(
-                Filter(column=resolve_col(f.column), operator=f.operator, value=f.value)
-                for f in a.filters
-            ),
-            time_range=a.time_range,
-            unit_conversion=a.unit_conversion,
+    valid_aggs = []
+    for a in plan.aggregations:
+        col = resolve_col(a.column)
+        valid_aggs.append(
+            Aggregation(
+                function=a.function,
+                column=col,
+                alias=a.alias,
+                filters=tuple(
+                    Filter(column=resolve_col(f.column), operator=f.operator, value=f.value)
+                    for f in a.filters
+                    if resolve_col(f.column) and resolve_col(f.column).column in schema.get(resolve_col(f.column).table, ())
+                ),
+                time_range=a.time_range,
+                unit_conversion=a.unit_conversion,
+            )
         )
-        for a in plan.aggregations
-    )
+    new_aggs = tuple(valid_aggs)
     if plan.output_type == "number" and len(new_aggs) > 1:
         q_low = question.lower()
         if any(w in q_low for w in ("tiền", "doanh thu", "chi phí", "giá", "vnd", "đồng", "doanh so", "doanh số")):
