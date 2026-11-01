@@ -727,6 +727,15 @@ def heal_query_plan(
                         return mm
                 return monthly_matches[0]
 
+        if target_yr and str(target_yr) not in cleaned:
+            yr_match = re.search(r'\b(202\d)\b', cleaned)
+            if yr_match:
+                cleaned_swapped = cleaned.replace(yr_match.group(1), str(target_yr))
+                candidates_yr = [t for t in valid_tables if cleaned_swapped.lower() in t.lower()]
+                if candidates_yr:
+                    cleaned = cleaned_swapped
+                    cleaned_colon = cleaned.replace("::", ":")
+
         candidates = [
             t for t in valid_tables
             if cleaned.lower() in t.lower()
@@ -742,10 +751,33 @@ def heal_query_plan(
             return valid_tables[0]
         if len(candidates) == 1:
             return candidates[0]
+
+        referenced_cols = set()
+        for f in plan.filters:
+            if f.column and f.column.column: referenced_cols.add(f.column.column.lower())
+        for a in plan.aggregations:
+            if a.column and a.column.column: referenced_cols.add(a.column.column.lower())
+        for c in plan.selected_columns:
+            if c and c.column: referenced_cols.add(c.column.lower())
+        for g in plan.group_by:
+            if g and g.column: referenced_cols.add(g.column.lower())
+
         q_tokens = [tok for tok in re.findall(r"[a-zA-Z0-9]+", question.lower()) if len(tok) >= 2]
         def match_score(t: str) -> int:
             t_low = t.lower()
-            return sum(1 for tok in q_tokens if tok in t_low)
+            score = sum(1 for tok in q_tokens if tok in t_low)
+            t_cols = [c.lower() for c in schema.get(t, ())]
+            for rc in referenced_cols:
+                if any(rc == tc or rc in tc or tc in rc for tc in t_cols):
+                    score += 10
+            if target_yr:
+                if str(target_yr) in t_low:
+                    score += 20
+                elif any(str(y) in t_low for y in range(2020, 2030) if y != target_yr):
+                    score -= 20
+            if "::banhang" in t_low or "::sheet1" in t_low or "::data" in t_low:
+                score += 5
+            return score
         return max(candidates, key=match_score)
     new_base = resolve_table(plan.base_table)
     table_map: dict[str, str] = {plan.base_table: new_base}
@@ -851,8 +883,24 @@ def heal_query_plan(
         new_group_by = ()
 
     valid_aggs = []
+    base_cols = list(schema.get(new_base, ()))
     for a in plan.aggregations:
         col = resolve_col(a.column)
+        if col and col.column not in schema.get(col.table, ()):
+            col_in_base = resolve_col(ColumnRef(table=new_base, column=col.column))
+            if col_in_base and col_in_base.column in base_cols:
+                col = col_in_base
+            else:
+                q_low = question.lower()
+                c_low = col.column.lower()
+                if any(m in c_low or m in q_low for m in ("amount", "revenue", "tiền", "doanh thu", "thành tiền", "tổng tiền", "tổng thanh toán")):
+                    money_cols = [bc for bc in base_cols if any(m in bc.lower() for m in ("thành tiền", "tổng thanh toán", "tổng tiền", "tiền hàng", "doanh thu", "tiền"))]
+                    if money_cols:
+                        col = ColumnRef(table=new_base, column=money_cols[0])
+                elif any(q in c_low or q in q_low for q in ("quantity", "qty", "số lượng", "sl")):
+                    qty_cols = [bc for bc in base_cols if any(q in bc.lower() for q in ("sl bán", "số lượng", "sl", "s.l"))]
+                    if qty_cols:
+                        col = ColumnRef(table=new_base, column=qty_cols[0])
         valid_aggs.append(
             Aggregation(
                 function=a.function,
@@ -1025,8 +1073,32 @@ class JsonPlanAdapter:
                     {table: set(columns) for table, columns in context.schema.items()},
                 )
                 if plan.output_type is None:
-                    raise QuestionUnderstandingError(
-                        "Generated query plan must declare an output type"
+                    q_low = question.lower()
+                    if plan.aggregations and not plan.group_by and not any(w in q_low for w in ("top", "món nào", "những", "danh sách", "liệt kê")):
+                        p_out = "number"
+                    elif plan.group_by or any(w in q_low for w in ("top", "món nào", "những", "danh sách", "liệt kê")):
+                        p_out = "list"
+                    else:
+                        p_out = "number"
+                    plan = QueryPlan(
+                        base_table=plan.base_table,
+                        joins=plan.joins,
+                        selected_columns=plan.selected_columns,
+                        filters=plan.filters,
+                        group_by=plan.group_by,
+                        group_filters=plan.group_filters,
+                        group_exclusions=plan.group_exclusions,
+                        aggregations=plan.aggregations,
+                        calculations=plan.calculations,
+                        count_groups=plan.count_groups,
+                        sort=plan.sort,
+                        limit=plan.limit,
+                        time_range=plan.time_range,
+                        time_buckets=plan.time_buckets,
+                        business_rules=plan.business_rules,
+                        output_type=p_out,
+                        evidence_requirements=plan.evidence_requirements,
+                        metadata=plan.metadata,
                     )
                 self.valid_plan_count += 1
                 return plan

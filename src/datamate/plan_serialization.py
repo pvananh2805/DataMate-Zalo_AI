@@ -219,11 +219,18 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         and (
             data.get("output_type") in {"unanswerable", "abstain"}
             or meta_status in {"unanswerable", "abstained", "ambiguous", "insufficient_data"}
+            or (data.get("output_type") is None and not data.get("aggregations") and not data.get("selected_columns") and not data.get("group_by"))
         )
     ):
         base_table = None
         if data.get("output_type") not in {"unanswerable", "abstain"}:
             data["output_type"] = "abstain"
+        if not isinstance(meta_val, Mapping):
+            data["metadata"] = {"status": "abstained", "reason": "Không đủ dữ liệu để trả lời câu hỏi"}
+        elif meta_val.get("status") not in {"abstained", "unanswerable"}:
+            meta_dict = dict(meta_val)
+            meta_dict["status"] = "abstained"
+            data["metadata"] = meta_dict
     else:
         base_table = _string(base_table_value, "base_table")
 
