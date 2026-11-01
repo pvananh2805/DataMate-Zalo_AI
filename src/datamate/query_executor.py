@@ -303,6 +303,23 @@ def _to_decimal(value: object, *, alias: str) -> Decimal:
         return number
     if isinstance(value, str):
         v = value.strip()
+        # Vietnamese currency shorthand: '2tr756' -> 2,756,000, '1tr550' -> 1,550,000, '1tr5' -> 1,500,000, '2tr' -> 2,000,000
+        m_tr = re.match(r"^([+-]?\d+)\s*tr\s*(\d+)?$", v.lower())
+        if m_tr:
+            trieu = int(m_tr.group(1))
+            nghin_str = m_tr.group(2)
+            if nghin_str:
+                if len(nghin_str) == 1:
+                    nghin = int(nghin_str) * 100_000
+                elif len(nghin_str) == 2:
+                    nghin = int(nghin_str) * 10_000
+                elif len(nghin_str) == 3:
+                    nghin = int(nghin_str) * 1_000
+                else:
+                    nghin = int(nghin_str)
+                return Decimal(trieu * 1_000_000 + nghin)
+            return Decimal(trieu * 1_000_000)
+
         # Check for unit suffix: '1 ly', '2 cái', '42k', '43.000đ'
         m_unit = re.match(r"^([+-]?[\d.,]+)\s*([a-zA-ZÀ-ỹ%]+)$", v)
         if m_unit:

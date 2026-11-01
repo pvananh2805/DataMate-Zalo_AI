@@ -212,11 +212,18 @@ def query_plan_from_dict(value: object) -> QueryPlan:
     }
     data = _object(value, "query plan", fields)
     base_table_value = data.get("base_table")
+    meta_val = data.get("metadata")
+    meta_status = meta_val.get("status") if isinstance(meta_val, Mapping) else None
     if (
         base_table_value is None
-        and data.get("output_type") in {"unanswerable", "abstain"}
+        and (
+            data.get("output_type") in {"unanswerable", "abstain"}
+            or meta_status in {"unanswerable", "abstained", "ambiguous", "insufficient_data"}
+        )
     ):
         base_table = None
+        if data.get("output_type") not in {"unanswerable", "abstain"}:
+            data["output_type"] = "abstain"
     else:
         base_table = _string(base_table_value, "base_table")
 

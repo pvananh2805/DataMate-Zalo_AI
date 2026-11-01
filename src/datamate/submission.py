@@ -209,8 +209,8 @@ class SubmissionWriter:
         os.fsync(self.stream.fileno())
         self.stream.close()
         if self.destination.exists():
-            raise SubmissionError(f"Tệp đầu ra đã tồn tại: {self.destination}")
-        os.rename(self.temporary, self.destination)
+            self.destination.unlink(missing_ok=True)
+        os.replace(self.temporary, self.destination)
         self.committed = True
 
     def abort(self) -> None:

@@ -664,7 +664,7 @@ def heal_query_plan(
     question: str,
     as_of_date: str | None = None,
 ) -> QueryPlan:
-    if not schema or not plan.base_table:
+    if not schema or not plan.base_table or plan.output_type in ('abstain', 'unanswerable') or plan.metadata.get('status') in ('abstained', 'unanswerable', 'ambiguous', 'insufficient_data'):
         return plan
     valid_tables = list(schema.keys())
 
@@ -699,7 +699,13 @@ def heal_query_plan(
 
     def resolve_table(req_table: str | None) -> str:
         if not req_table:
-            req_table = valid_tables[0]
+            return valid_tables[0]
+        cleaned = req_table.replace(chr(92), "/").split("/")[-1].strip()
+        cleaned_colon = cleaned.replace("::", ":")
+        if cleaned in valid_tables:
+            return cleaned
+        if cleaned_colon in valid_tables:
+            return cleaned_colon
         if target_mth and target_yr:
             patterns = [
                 f't{target_mth}_{target_yr}',
@@ -715,24 +721,24 @@ def heal_query_plan(
             monthly_matches = [t for t in valid_tables if any(p in t.lower() for p in patterns)]
             if monthly_matches:
                 for mm in monthly_matches:
-                    prefix = Path(req_table.split("::")[0]).stem.split("_")[0].lower()
+                    prefix = Path(cleaned_colon.split(":")[0]).stem.split("_")[0].lower()
                     if prefix in mm.lower():
                         return mm
                 return monthly_matches[0]
 
-        if req_table in valid_tables:
-            return req_table
         candidates = [
             t for t in valid_tables
-            if req_table.lower() in t.lower()
-            or t.lower().endswith("::" + req_table.lower())
-            or Path(t.split("::")[0]).stem.lower() == req_table.lower()
+            if cleaned.lower() in t.lower()
+            or cleaned_colon.lower() in t.lower()
+            or t.lower().endswith(":" + cleaned.lower())
+            or t.lower().endswith("::" + cleaned.lower())
+            or Path(t.replace("::", ":").split(":")[0]).stem.lower() == cleaned_colon.split(":")[0].lower()
         ]
         if not candidates:
-            req_norm = _norm(req_table)
+            req_norm = _norm(cleaned)
             candidates = [t for t in valid_tables if req_norm in _norm(t)]
         if not candidates:
-            return req_table
+            return valid_tables[0]
         if len(candidates) == 1:
             return candidates[0]
         q_tokens = [tok for tok in re.findall(r"[a-zA-Z0-9]+", question.lower()) if len(tok) >= 2]
@@ -740,7 +746,6 @@ def heal_query_plan(
             t_low = t.lower()
             return sum(1 for tok in q_tokens if tok in t_low)
         return max(candidates, key=match_score)
-
     new_base = resolve_table(plan.base_table)
     table_map: dict[str, str] = {plan.base_table: new_base}
     for j in plan.joins:
@@ -763,8 +768,46 @@ def heal_query_plan(
         matches = [vc for vc in valid_cols if c_norm in _norm(vc) or _norm(vc) in c_norm]
         if matches:
             return ColumnRef(table=target_table, column=matches[0])
-        return ColumnRef(table=target_table, column=ref.column)
 
+        c_low = ref.column.strip().lower()
+        # 1. Product synonyms
+        if any(p in c_low for p in ("tên hàng", "sản phẩm", "hàng bán", "mặt hàng", "tên món", "product")):
+            for vc in valid_cols:
+                vc_low = vc.lower()
+                if "khách" not in vc_low and any(p == vc_low or p in vc_low for p in ("tên sản phẩm", "hàng bán", "tên hàng", "mặt hàng", "sản phẩm")):
+                    return ColumnRef(table=target_table, column=vc)
+
+        # 2. Revenue / Money synonyms
+        if any(m in c_low for m in ("amount", "revenue", "tiền", "doanh thu", "thành tiền", "tổng tiền")):
+            for vc in valid_cols:
+                vc_low = vc.lower()
+                if any(m == vc_low for m in ("thành tiền", "tổng tiền", "tiền", "doanh thu", "tổng cộng", "tiền bán")):
+                    return ColumnRef(table=target_table, column=vc)
+            for vc in valid_cols:
+                if "tiền" in vc.lower() or "doanh thu" in vc.lower():
+                    return ColumnRef(table=target_table, column=vc)
+
+        # 3. Quantity synonyms
+        if any(q in c_low for q in ("quantity", "qty", "số lượng", "sl")):
+            for vc in valid_cols:
+                vc_low = vc.lower()
+                if any(q == vc_low for q in ("sl bán", "số lượng", "sl", "số lượng bán", "số lượng sản phẩm")):
+                    return ColumnRef(table=target_table, column=vc)
+            for vc in valid_cols:
+                if "số lượng" in vc.lower() or "sl" in vc.lower():
+                    return ColumnRef(table=target_table, column=vc)
+
+        # 4. Date synonyms
+        if any(d in c_low for d in ("date", "time", "thời gian", "ngày")):
+            for vc in valid_cols:
+                vc_low = vc.lower()
+                if any(d == vc_low for d in ("ngày xuất", "ngày bán", "ngày đặt hàng", "thời gian", "ngày")):
+                    return ColumnRef(table=target_table, column=vc)
+            for vc in valid_cols:
+                if "ngày" in vc.lower() or "thời gian" in vc.lower():
+                    return ColumnRef(table=target_table, column=vc)
+
+        return ColumnRef(table=target_table, column=ref.column)
     def resolve_filter_col(ref: ColumnRef | None, filter_val: object) -> ColumnRef | None:
         col_ref = resolve_col(ref)
         if col_ref is None:
@@ -792,6 +835,9 @@ def heal_query_plan(
         filtered_filters.append(Filter(column=res_col, operator=f.operator, value=f.value))
     new_filters = tuple(filtered_filters)
     new_group_by = tuple(resolve_col(g) for g in plan.group_by)
+    if plan.output_type == "number":
+        new_group_by = ()
+
     new_aggs = tuple(
         Aggregation(
             function=a.function,
@@ -806,6 +852,22 @@ def heal_query_plan(
         )
         for a in plan.aggregations
     )
+    if plan.output_type == "number" and len(new_aggs) > 1:
+        q_low = question.lower()
+        if any(w in q_low for w in ("tiền", "doanh thu", "chi phí", "giá", "vnd", "đồng", "doanh so", "doanh số")):
+            money_aggs = [a for a in new_aggs if a.column and any(m in a.column.column.lower() for m in ("tiền", "thành tiền", "tổng"))]
+            if money_aggs:
+                new_aggs = (money_aggs[0],)
+            else:
+                new_aggs = (new_aggs[0],)
+        elif any(w in q_low for w in ("bao nhiêu", "số lượng", "ly", "cây", "lon", "chai", "chiếc", "đơn")):
+            qty_aggs = [a for a in new_aggs if a.column and any(q in a.column.column.lower() for q in ("sl", "số lượng", "đơn"))]
+            if qty_aggs:
+                new_aggs = (qty_aggs[0],)
+            else:
+                new_aggs = (new_aggs[0],)
+        else:
+            new_aggs = (new_aggs[0],)
     agg_cols = {a.column.column: a.alias for a in new_aggs if a.column}
     new_selected = tuple(resolve_col(c) for c in plan.selected_columns)
     if new_group_by or new_aggs:
@@ -917,12 +979,19 @@ class JsonPlanAdapter:
                 )
                 if is_abstain:
                     p_out = plan.output_type if plan.output_type in {"unanswerable", "abstain"} else ("abstain" if plan.metadata.get("status") == "abstained" else "unanswerable")
+                    if p_out == "abstain":
+                        status = "abstained"
+                    else:
+                        status = plan.metadata.get("status")
+                    reason = plan.metadata.get("reason")
+                    if not isinstance(reason, str) or not reason.strip():
+                        reason = "Không đủ dữ liệu để trả lời câu hỏi"
                     plan = QueryPlan(
                         base_table=plan.base_table if plan.base_table in context.schema else None,
                         output_type=p_out,
                         metadata={
-                            "status": plan.metadata.get("status"),
-                            "reason": plan.metadata.get("reason"),
+                            "status": status,
+                            "reason": reason,
                         }
                     )
                     validate_abstention_plan(plan, context.schema)
