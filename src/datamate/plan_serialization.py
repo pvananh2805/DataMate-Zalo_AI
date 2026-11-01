@@ -132,14 +132,26 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
     return result
 
 
+def _strip_standalone_json_fence(raw: str) -> str:
+    stripped = raw.strip()
+    first_line, separator, body = stripped.partition("\n")
+    if first_line not in {"```", "```json"} or not separator:
+        return raw
+    if not body.endswith("```"):
+        return raw
+    return body[:-3].strip()
+
+
 def query_plan_from_json(raw: str) -> QueryPlan:
-    """Decode a pure JSON object; prose, code fences, and extra fields are rejected."""
+    """Decode JSON, allowing only an otherwise-standalone Markdown JSON fence."""
     try:
         data = json.loads(
-            raw,
+            _strip_standalone_json_fence(raw),
             parse_constant=_reject_json_constant,
             object_pairs_hook=_reject_duplicate_keys,
         )
+    except RecursionError as exc:
+        raise QueryPlanFormatError("query plan is too deeply nested") from exc
     except (json.JSONDecodeError, TypeError) as exc:
         raise QueryPlanFormatError(f"query plan is not valid JSON: {exc}") from exc
     return query_plan_from_dict(data)
@@ -168,7 +180,14 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         "metadata",
     }
     data = _object(value, "query plan", fields)
-    base_table = _string(data.get("base_table"), "base_table")
+    base_table_value = data.get("base_table")
+    if (
+        base_table_value is None
+        and data.get("output_type") in {"unanswerable", "abstain"}
+    ):
+        base_table = None
+    else:
+        base_table = _string(base_table_value, "base_table")
 
     joins = []
     for index, item in enumerate(_sequence(data.get("joins", []), "joins")):

@@ -65,6 +65,9 @@ def _fake_cuda_backend(
     monkeypatch,
     *,
     free_bytes: int,
+    device: str = "cuda",
+    precision: str = "fp16",
+    bf16_supported: bool = True,
     generation_timeout_seconds: float | None = None,
 ):
     class FakeTensor:
@@ -127,8 +130,12 @@ def _fake_cuda_backend(
     fake_torch = SimpleNamespace(
         cuda=SimpleNamespace(
             is_available=lambda: True,
-            is_bf16_supported=lambda: True,
+            is_bf16_supported=lambda including_emulation=True: bf16_supported,
             mem_get_info=lambda device: (free_bytes, 4096),
+            reset_peak_memory_stats=lambda _device: None,
+            synchronize=lambda _device: None,
+            max_memory_allocated=lambda _device: 128,
+            max_memory_reserved=lambda _device: 256,
         ),
         set_num_threads=lambda _: None,
         float32="float32",
@@ -145,12 +152,20 @@ def _fake_cuda_backend(
             from_pretrained=lambda *_args, **_kwargs: model
         ),
     )
+    fake_psutil = SimpleNamespace(
+        Process=lambda _pid: SimpleNamespace(
+            memory_info=lambda: SimpleNamespace(rss=1024)
+        )
+    )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
     checkpoint = tmp_path / "checkpoint"
     _write_checkpoint_files(checkpoint)
     return LocalTransformersBackend(
         checkpoint,
+        device=device,
+        precision=precision,
         generation_timeout_seconds=generation_timeout_seconds,
     ), model
 
@@ -186,6 +201,89 @@ def test_local_backend_records_cuda_memory_and_model_storage(
     assert backend.estimated_kv_cache_bytes == estimated_cache_bytes
     assert backend.cuda_free_bytes_before_transfer == 16 + estimated_cache_bytes
     assert backend.cuda_total_bytes == 4096
+
+
+def test_local_backend_uses_cpu_only_when_explicitly_configured(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, model = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=0,
+        device="cpu",
+        precision="fp32",
+    )
+
+    backend.load()
+    output = backend.generate("Tổng doanh thu?")
+
+    assert output == "{}"
+    assert model.moved_to == "cpu"
+    assert backend.cuda_free_bytes_before_transfer is None
+    assert backend.metrics()["device"] == "cpu"
+    assert backend.metrics()["load_seconds"] is not None
+    assert backend.metrics()["generated_tokens"] == 1
+    assert backend.metrics()["process_rss_bytes"] == 1024
+
+
+def test_local_backend_counts_tokens_with_generation_tokenizer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, _ = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=1_000_000,
+    )
+
+    assert backend.count_prompt_tokens("prompt") == 2
+
+
+def test_local_backend_requires_explicit_fp32_for_cpu(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, _ = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=0,
+        device="cpu",
+        precision="fp16",
+    )
+
+    with pytest.raises(LocalModelError, match="CPU inference requires fp32"):
+        backend.load()
+
+
+def test_local_backend_rejects_bf16_emulation_on_unsupported_gpu(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, model = _fake_cuda_backend(
+        tmp_path,
+        monkeypatch,
+        free_bytes=1_000_000,
+        precision="bf16",
+        bf16_supported=False,
+    )
+
+    with pytest.raises(LocalModelError, match="does not support bf16"):
+        backend.load()
+
+    assert model.moved_to is None
+
+
+def test_local_backend_does_not_fallback_after_cuda_memory_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    backend, model = _fake_cuda_backend(tmp_path, monkeypatch, free_bytes=15)
+
+    with pytest.raises(LocalModelError, match="select device=cpu explicitly"):
+        backend.load()
+
+    assert model.moved_to is None
 
 
 def test_local_backend_rejects_cuda_memory_without_room_for_estimated_cache(

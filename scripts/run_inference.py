@@ -105,7 +105,10 @@ def _read_inference_config(path: Path) -> dict[str, Any]:
     }
     value_fields = {
         "as_of_date",
+        "device",
+        "local_files_only",
         "precision",
+        "trust_remote_code",
         "max_prompt_tokens",
         "max_new_tokens",
         "parameter_cap",
@@ -146,6 +149,21 @@ def _read_inference_config(path: Path) -> dict[str, Any]:
                 "Configuration field as_of_date must be an ISO-8601 date"
             ) from exc
     config["as_of_date"] = as_of_date
+
+    device = payload.get("device", "cuda")
+    if not isinstance(device, str) or device not in {"cpu", "cuda"}:
+        raise ValueError("Configuration device must be cpu or cuda")
+    config["device"] = device
+    for field, required in (
+        ("local_files_only", True),
+        ("trust_remote_code", False),
+    ):
+        value = payload.get(field, required)
+        if value is not required:
+            raise ValueError(
+                f"Configuration {field} must be {str(required).lower()}"
+            )
+        config[field] = required
 
     precision = payload.get("precision", "bf16")
     if not isinstance(precision, str) or precision not in {"fp32", "fp16", "bf16"}:
@@ -192,9 +210,12 @@ def _process_questions(
     submission_writer: SubmissionWriter | None,
     default_as_of_date: str | None = None,
     inference_config: dict[str, object] | None = None,
+    metrics: dict[str, int] | None = None,
 ) -> tuple[int, int]:
     succeeded = 0
     failed = 0
+    valid_plan_count_start = planner.valid_plan_count
+    explicit_abstention_count_start = planner.explicit_abstention_count
     context_cache: dict[str, BusinessContextDocuments] = {}
     with input_path.open("r", encoding="utf-8-sig") as stream:
         for line_number, line in enumerate(stream, start=1):
@@ -296,6 +317,10 @@ def _process_questions(
                         result.answer,
                         plan=result.plan,
                     )
+                if metrics is not None:
+                    metrics["questions_answered"] = metrics.get(
+                        "questions_answered", 0
+                    ) + (1 if result.answer.status == "answered" else 0)
                 succeeded += 1
             except (
                 DataLoadError,
@@ -307,11 +332,22 @@ def _process_questions(
                 QuestionUnderstandingError,
                 ValueError,
             ) as exc:
+                if metrics is not None and isinstance(exc, QuestionUnderstandingError):
+                    metrics["questions_abstained_due_to_model_error"] = (
+                        metrics.get("questions_abstained_due_to_model_error", 0) + 1
+                    )
                 print(
                     f"Câu hỏi {question_id} lỗi: {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
                 failed += 1
+    if metrics is not None:
+        metrics["valid_query_plans"] = (
+            planner.valid_plan_count - valid_plan_count_start
+        )
+        metrics["explicit_abstentions"] = (
+            planner.explicit_abstention_count - explicit_abstention_count_start
+        )
     return succeeded, failed
 
 
@@ -329,6 +365,11 @@ def main() -> None:
         help="Thư mục chứa thư mục con cho từng business_id",
     )
     parser.add_argument("--model-path", type=Path, help="Checkpoint mô hình cục bộ")
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda"),
+        help="Thiết bị tường minh; không tự fallback giữa CPU và CUDA",
+    )
     parser.add_argument("--log", type=Path, help="Tệp nhật ký JSONL nội bộ")
     parser.add_argument("--coercions", type=Path, help="JSON policy chuẩn hóa đã duyệt")
     parser.add_argument("--rulebook", type=Path, help="Markdown rulebook dùng chung")
@@ -358,6 +399,7 @@ def main() -> None:
     input_path = option("input")
     business_root = option("business_data_root")
     model_path = option("model_path")
+    device = args.device or config.get("device", "cuda")
     log_path = option("log")
     submission_path = option("submission_output")
     if (
@@ -461,6 +503,7 @@ def main() -> None:
 
     backend = LocalTransformersBackend(
         model_path,
+        device=device,
         precision=precision,
         max_prompt_tokens=max_prompt_tokens,
         max_new_tokens=max_new_tokens,
@@ -477,6 +520,7 @@ def main() -> None:
         if submission_path is not None
         else None
     )
+    run_metrics: dict[str, int] = {}
     try:
         succeeded, failed = _process_questions(
             input_path,
@@ -494,11 +538,15 @@ def main() -> None:
             default_as_of_date=as_of_date,
             inference_config={
                 "precision": precision,
+                "device": device,
+                "local_files_only": True,
+                "trust_remote_code": False,
                 "max_prompt_tokens": max_prompt_tokens,
                 "max_new_tokens": max_new_tokens,
                 "parameter_cap": parameter_cap,
                 "generation_timeout_seconds": generation_timeout_seconds,
             },
+            metrics=run_metrics,
         )
         if submission_writer is not None:
             if failed:
@@ -519,6 +567,13 @@ def main() -> None:
                 "processed": succeeded + failed,
                 "succeeded": succeeded,
                 "failed": failed,
+                "questions_answered": run_metrics.get("questions_answered", 0),
+                "valid_query_plans": run_metrics.get("valid_query_plans", 0),
+                "explicit_abstentions": run_metrics.get("explicit_abstentions", 0),
+                "questions_abstained_due_to_model_error": run_metrics.get(
+                    "questions_abstained_due_to_model_error", 0
+                ),
+                "model_metrics": backend.metrics(),
                 "run_log": str(log_path),
                 "metric_status": "internal_run_log_not_submission",
                 "submission": (

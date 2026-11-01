@@ -1,8 +1,9 @@
 # Tích hợp model local vào DataMate
 
-Tài liệu này hướng dẫn nối một checkpoint đã được bạn lựa chọn và chuẩn bị vào
-pipeline inference. DataMate **chưa chọn hoặc phân phối model cụ thể**; các bước
-dưới đây không khẳng định checkpoint nào đã được benchmark hoặc phù hợp điều lệ.
+Tài liệu này hướng dẫn nối checkpoint local vào pipeline inference. Cấu hình
+mẫu Qwen2.5-0.5B-Instruct đã có trong repository; DataMate không phân phối trọng
+số model. Smoke test local đã load model nhưng 0/3 câu tự tạo sinh QueryPlan hợp
+lệ; không coi đây là benchmark accuracy hoặc xác nhận phù hợp điều lệ.
 
 ## Model được dùng ở bước nào?
 
@@ -34,8 +35,9 @@ Checkpoint cần:
   `trust_remote_code=False`.
 - Có thể sinh tiếp văn bản từ prompt. Chat template được dùng nếu tokenizer có
   khai báo; nếu không, backend gửi prompt dạng text thường.
-- Vừa VRAM của GPU ở precision bạn chọn và có không quá `parameter_cap` tham số
-  (mặc định 15 tỷ).
+- Vừa VRAM của GPU ở precision bạn chọn, hoặc dùng CPU với `device: "cpu"` và
+  `precision: "fp32"`, đồng thời có không quá `parameter_cap` tham số (mặc định
+  15 tỷ).
 
 Model instruction/chat thường phù hợp hơn model base cho sinh JSON, nhưng đây
 chỉ là tiêu chí lựa chọn cần benchmark, không phải xác nhận một model cụ thể.
@@ -63,19 +65,23 @@ weights local (kể cả các shard được khai báo trong index). Sau đó Tr
 vẫn phải đọc và xác thực checkpoint thực tế; kiểm tra tệp tồn tại không chứng
 minh checkpoint hợp lệ hoặc tương thích kiến trúc.
 
-## 2. Cài runtime trên máy GPU
+## 2. Cài runtime
 
-Tạo môi trường ảo rồi cài **bản PyTorch đúng với GPU/driver/CUDA của máy** theo
-hướng dẫn chính thức của PyTorch. Sau đó cài dependency inference:
+Tạo môi trường ảo rồi cài **bản PyTorch đúng với GPU/driver/CUDA của máy** nếu
+dùng CUDA, theo hướng dẫn chính thức của PyTorch. Có thể chọn CPU nếu không có
+đủ VRAM; inference CPU dùng `fp32` và có thể chậm đáng kể. Sau đó cài dependency
+inference:
 
 ```powershell
 python -m pip install -r requirements-inference.txt
 ```
 
 Trên Linux, dùng cùng lệnh trong virtual environment Linux.
-`requirements-inference.txt` khai báo dải phiên bản torch/transformers nhưng
-không chọn build CUDA cho máy của bạn. Không dùng lệnh cài PyTorch chung một
-cách mù quáng nếu máy cần build CUDA cụ thể.
+`requirements-inference.txt` khai báo các dải tương thích cho PyTorch,
+Transformers, Tokenizers, Hugging Face Hub và psutil nhưng không chọn build CUDA
+cho máy của bạn. Không dùng lệnh cài PyTorch chung một cách mù quáng nếu máy cần
+build CUDA cụ thể. Chỉ cài trong virtual environment riêng, không cài/nâng/hạ
+package Python toàn cục.
 
 Kiểm tra runtime:
 
@@ -83,12 +89,12 @@ Kiểm tra runtime:
 python -c "import torch, transformers; print(torch.__version__); print(transformers.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
 ```
 
-Inference hiện từ chối chạy nếu CUDA không khả dụng; không có CPU fallback.
-Precision mặc định là `bf16`, chỉ chạy nếu GPU hỗ trợ. Nếu GPU hỗ trợ FP16 nhưng
-không hỗ trợ BF16, có thể cấu hình `fp16`. Không thể suy ra VRAM cần thiết chỉ
-từ tên model. Backend có ước lượng sơ bộ bộ nhớ weights và KV cache từ config,
-precision, giới hạn prompt/output; ước lượng này không gồm workspace/fragmentation
-và không thay thế smoke test trên GPU thực tế.
+Chọn `device` bằng config/flag; backend không tự fallback khi CUDA lỗi hoặc
+thiếu VRAM. CUDA mặc định dùng `bf16`, chỉ chạy nếu GPU hỗ trợ; GPU FP16-only
+cần `precision: "fp16"`. CPU yêu cầu `precision: "fp32"`. Không thể suy ra VRAM
+cần thiết chỉ từ tên model. Backend ước lượng bộ nhớ weights và KV cache, đo
+thời gian load/generate, RAM tiến trình và peak VRAM CUDA; ước lượng không gồm
+workspace/fragmentation và không thay thế smoke test trên GPU thực tế.
 
 ## 3. Khai báo đường dẫn model
 
@@ -107,7 +113,10 @@ Trong `config\inference.local.json`, sửa tối thiểu:
   "model_path": "D:\\DataMate-ZaloAI\\models\\my-checkpoint",
   "log": "..\\output\\run.jsonl",
   "submission_output": "..\\output\\submission.jsonl",
+  "device": "cuda",
+  "local_files_only": true,
   "precision": "bf16",
+  "trust_remote_code": false,
   "max_prompt_tokens": 16384,
   "max_new_tokens": 1024,
   "parameter_cap": 15000000000,
@@ -118,6 +127,8 @@ Trong `config\inference.local.json`, sửa tối thiểu:
 Đây là các trường cần thay trong config mẫu; giữ lại các trường context khác
 nếu cần. `model_path` có thể là đường dẫn tuyệt đối hoặc tương đối so với thư
 mục chứa config. Config cá nhân `config/inference.local.json` được Git ignore.
+Giữ `local_files_only: true` và `trust_remote_code: false`; CLI từ chối bật
+truy cập Hub hoặc remote code.
 `generation_timeout_seconds` là giới hạn tùy chọn cho mỗi lần sinh; `null`
 nghĩa là không đặt giới hạn thời gian. Nếu cấu hình, backend chuyển giới hạn cho
 Transformers và báo lỗi thay vì trả một QueryPlan bị cắt khi hết thời gian.
@@ -227,12 +238,12 @@ cần mạng; đó là bước chuẩn bị riêng. Đường chạy inference k
 |---|---|
 | `model_path must be a local checkpoint directory` | Đường dẫn config phải trỏ đến thư mục checkpoint đã tồn tại. |
 | Thiếu PyTorch hoặc Transformers | Cài PyTorch CUDA phù hợp trước, rồi cài inference requirements. |
-| `Local Transformers inference is configured for CUDA` | Kiểm tra driver, CUDA build của PyTorch và `torch.cuda.is_available()`. |
+| CUDA không khả dụng/không đủ VRAM | Kiểm tra driver, CUDA build của PyTorch và `torch.cuda.is_available()`; nếu muốn CPU, đặt `device: "cpu"` và `precision: "fp32"` rõ ràng. |
 | GPU không hỗ trợ `bf16` | Chỉ đổi sang `fp16` nếu GPU hỗ trợ và checkpoint chạy ổn với precision đó. |
 | Không tìm thấy config/tokenizer/weights | Chuẩn bị đầy đủ artifact của checkpoint; backend không tải phần còn thiếu. |
 | Vượt parameter cap hoặc hết VRAM | Kiểm tra đúng checkpoint, precision, VRAM; không tăng cap nếu chưa xác nhận tài nguyên. |
 | QueryPlan sai hoặc JSON không hợp lệ | Xem run log/manual results. Khả năng tạo plan đúng phải benchmark riêng cho checkpoint/model prompt. |
 
-Tài liệu này mô tả đường tích hợp đã có trong source, không chứng minh model
-thực tế đã chạy. Trạng thái GPU/checkpoint/submission được cập nhật tại
-[planning/17_DEPLOYMENT_REPORT.md](planning/17_DEPLOYMENT_REPORT.md).
+Tài liệu này mô tả đường tích hợp trong source. Kết quả load/inference,
+QueryPlan validation và giới hạn đã đo được ghi tại
+[planning/21_LOCAL_MODEL_INTEGRATION_REPORT.md](planning/21_LOCAL_MODEL_INTEGRATION_REPORT.md).

@@ -174,7 +174,7 @@ class TimeBucket:
 class QueryPlan:
     """Declarative plan; it contains no SQL or executable code."""
 
-    base_table: str
+    base_table: str | None
     joins: tuple[Join, ...] = ()
     selected_columns: tuple[ColumnRef, ...] = ()
     filters: tuple[Filter, ...] = ()
@@ -218,7 +218,7 @@ def validate_query_plan(
             "filters/calculations or abstain"
         )
 
-    included_tables = {plan.base_table}
+    included_tables = {plan.base_table} if isinstance(plan.base_table, str) else set()
     for join in plan.joins:
         if join.kind not in _JOIN_KINDS:
             issues.append(f"unsupported join kind: {join.kind}")
@@ -229,7 +229,9 @@ def validate_query_plan(
         elif left_known and right_known:
             issues.append("each join must introduce exactly one new table")
         included_tables.update((join.left.table, join.right.table))
-    if plan.base_table not in catalog:
+    if not isinstance(plan.base_table, str) or not plan.base_table:
+        issues.append("base_table must be a non-empty string")
+    elif plan.base_table not in catalog:
         issues.append(f"unknown base table: {plan.base_table}")
 
     def check_column(ref: ColumnRef, context: str) -> None:

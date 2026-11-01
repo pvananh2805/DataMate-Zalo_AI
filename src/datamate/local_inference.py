@@ -166,6 +166,7 @@ class LocalTransformersBackend:
         max_prompt_tokens: int = 16_384,
         parameter_cap: int = 15_000_000_000,
         cpu_threads: int = 2,
+        device: str = "cuda",
         generation_timeout_seconds: float | None = None,
     ) -> None:
         self.model_path = Path(model_path).resolve()
@@ -173,6 +174,8 @@ class LocalTransformersBackend:
             raise LocalModelError("model_path must be a local checkpoint directory")
         if precision not in {"fp32", "fp16", "bf16"}:
             raise ValueError("precision must be fp32, fp16, or bf16")
+        if device not in {"cpu", "cuda"}:
+            raise ValueError("device must be cpu or cuda")
         if (
             isinstance(max_new_tokens, bool)
             or not isinstance(max_new_tokens, int)
@@ -203,6 +206,7 @@ class LocalTransformersBackend:
         self.max_prompt_tokens = max_prompt_tokens
         self.parameter_cap = parameter_cap
         self.cpu_threads = cpu_threads
+        self.device = device
         self.generation_timeout_seconds = generation_timeout_seconds
         self.model_name = self.model_path.name
         self.parameter_count: int | None = None
@@ -210,6 +214,14 @@ class LocalTransformersBackend:
         self.estimated_kv_cache_bytes: int | None = None
         self.cuda_free_bytes_before_transfer: int | None = None
         self.cuda_total_bytes: int | None = None
+        self.cuda_peak_allocated_bytes: int | None = None
+        self.cuda_peak_reserved_bytes: int | None = None
+        self.load_seconds: float | None = None
+        self.last_generation_seconds: float | None = None
+        self.total_generation_seconds = 0.0
+        self.generated_tokens = 0
+        self.generation_count = 0
+        self.process_rss_bytes: int | None = None
         self._model: Any = None
         self._tokenizer: Any = None
         self._torch: Any = None
@@ -218,6 +230,7 @@ class LocalTransformersBackend:
     def _load(self) -> None:
         if self._model is not None:
             return
+        load_started = time.perf_counter()
         _validate_checkpoint_files(self.model_path)
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -227,17 +240,32 @@ class LocalTransformersBackend:
             raise LocalModelError(
                 "PyTorch is required for local inference; no remote API fallback exists"
             ) from exc
-        if not torch.cuda.is_available():
+        if self.device == "cuda" and not torch.cuda.is_available():
             raise LocalModelError(
-                "Local Transformers inference is configured for CUDA; no CPU fallback"
+                "Local Transformers inference is configured for CUDA; select device=cpu "
+                "explicitly to use CPU inference"
             )
-        if self.precision == "bf16" and not torch.cuda.is_bf16_supported():
+        if self.device == "cpu" and self.precision != "fp32":
+            raise LocalModelError(
+                "CPU inference requires fp32 precision; select it explicitly"
+            )
+        if (
+            self.device == "cuda"
+            and self.precision == "bf16"
+            and not torch.cuda.is_bf16_supported(including_emulation=False)
+        ):
             raise LocalModelError("Selected GPU does not support bf16")
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:
             raise LocalModelError(
                 "Transformers is required; install the selected model's runtime dependencies"
+            ) from exc
+        try:
+            import psutil
+        except ImportError as exc:
+            raise LocalModelError(
+                "psutil is required to record local inference memory usage"
             ) from exc
 
         torch.set_num_threads(self.cpu_threads)
@@ -279,21 +307,34 @@ class LocalTransformersBackend:
             sequence_tokens=self.max_prompt_tokens + self.max_new_tokens,
             bytes_per_value={"fp32": 4, "fp16": 2, "bf16": 2}[self.precision],
         )
+        free_bytes = None
+        total_bytes = None
+        if self.device == "cuda":
+            try:
+                free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+            except RuntimeError as exc:
+                raise LocalModelError(
+                    f"Cannot inspect CUDA device memory before loading {self.model_name}"
+                ) from exc
+            required_bytes = model_storage_bytes + estimated_kv_cache_bytes
+            if required_bytes > free_bytes:
+                raise LocalModelError(
+                    f"Model weights, buffers, and estimated KV cache need at least "
+                    f"{required_bytes:,} CUDA bytes ({model_storage_bytes:,} weights/buffers "
+                    f"+ {estimated_kv_cache_bytes:,} KV cache), but only {free_bytes:,} "
+                    "are free. The estimate excludes runtime workspace; select "
+                    "device=cpu explicitly to try CPU inference."
+                )
+        device = torch.device("cuda:0" if self.device == "cuda" else "cpu")
         try:
-            free_bytes, total_bytes = torch.cuda.mem_get_info(0)
+            model.to(device)
         except RuntimeError as exc:
-            raise LocalModelError(
-                f"Cannot inspect CUDA device memory before loading {self.model_name}"
-            ) from exc
-        required_bytes = model_storage_bytes + estimated_kv_cache_bytes
-        if required_bytes > free_bytes:
-            raise LocalModelError(
-                f"Model weights, buffers, and estimated KV cache need at least "
-                f"{required_bytes:,} CUDA bytes ({model_storage_bytes:,} weights/buffers "
-                f"+ {estimated_kv_cache_bytes:,} KV cache), but only {free_bytes:,} "
-                "are free. The estimate excludes runtime workspace."
-            )
-        model.to(torch.device("cuda:0"))
+            if self.device == "cuda" and "out of memory" in str(exc).casefold():
+                raise LocalModelError(
+                    "CUDA ran out of memory while loading the model; no automatic "
+                    "device fallback was attempted. Select device=cpu explicitly."
+                ) from exc
+            raise
         model.eval()
         self._model = model
         self._tokenizer = tokenizer
@@ -303,11 +344,63 @@ class LocalTransformersBackend:
         self.estimated_kv_cache_bytes = estimated_kv_cache_bytes
         self.cuda_free_bytes_before_transfer = free_bytes
         self.cuda_total_bytes = total_bytes
+        self.process_rss_bytes = psutil.Process(os.getpid()).memory_info().rss
+        self.load_seconds = time.perf_counter() - load_started
+
+    def metrics(self) -> dict[str, int | float | str | None]:
+        """Return observed load, generation, memory, and throughput measurements."""
+        tokens_per_second = (
+            self.generated_tokens / self.total_generation_seconds
+            if self.total_generation_seconds > 0
+            else None
+        )
+        return {
+            "device": self.device,
+            "precision": self.precision,
+            "parameter_count": self.parameter_count,
+            "model_storage_bytes": self.model_storage_bytes,
+            "estimated_kv_cache_bytes": self.estimated_kv_cache_bytes,
+            "load_seconds": self.load_seconds,
+            "process_rss_bytes": self.process_rss_bytes,
+            "cuda_total_bytes": self.cuda_total_bytes,
+            "cuda_free_bytes_before_transfer": self.cuda_free_bytes_before_transfer,
+            "cuda_peak_allocated_bytes": self.cuda_peak_allocated_bytes,
+            "cuda_peak_reserved_bytes": self.cuda_peak_reserved_bytes,
+            "generation_count": self.generation_count,
+            "generated_tokens": self.generated_tokens,
+            "last_generation_seconds": self.last_generation_seconds,
+            "total_generation_seconds": self.total_generation_seconds,
+            "tokens_per_second": tokens_per_second,
+        }
 
     def load(self) -> None:
         """Load the selected checkpoint once; subsequent calls are idempotent."""
         with self._lock:
             self._load()
+
+    def count_prompt_tokens(self, prompt: str) -> int:
+        """Count tokens with the same chat template used for generation."""
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be non-empty text")
+        with self._lock:
+            self._load()
+            tokenizer = self._tokenizer
+            if getattr(tokenizer, "chat_template", None):
+                encoded = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    tokenize=True,
+                    add_generation_prompt=True,
+                    return_tensors="pt",
+                    return_dict=True,
+                )
+            else:
+                encoded = tokenizer(
+                    prompt,
+                    return_tensors="pt",
+                    add_special_tokens=True,
+                    truncation=False,
+                )
+            return int(encoded["input_ids"].shape[-1])
 
     def generate(self, prompt: str) -> str:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -348,14 +441,21 @@ class LocalTransformersBackend:
                 "num_beams": 1,
                 "use_cache": True,
                 "pad_token_id": tokenizer.pad_token_id,
+                "temperature": None,
+                "top_p": None,
+                "top_k": None,
             }
             if self.generation_timeout_seconds is not None:
                 generation_options["max_time"] = self.generation_timeout_seconds
             if tokenizer.eos_token_id is not None:
                 generation_options["eos_token_id"] = tokenizer.eos_token_id
             generation_started = time.monotonic()
+            if self.device == "cuda":
+                torch.cuda.reset_peak_memory_stats(0)
             with torch.inference_mode():
                 generated = self._model.generate(**inputs, **generation_options)
+            if self.device == "cuda":
+                torch.cuda.synchronize(0)
             generation_elapsed = time.monotonic() - generation_started
             if (
                 self.generation_timeout_seconds is not None
@@ -368,6 +468,17 @@ class LocalTransformersBackend:
             continuation = generated[0, input_ids.shape[-1] :]
             if continuation.numel() == 0:
                 raise LocalModelError("Model returned an empty completion")
+            generated_tokens = continuation.numel()
+            self.last_generation_seconds = generation_elapsed
+            self.total_generation_seconds += generation_elapsed
+            self.generated_tokens += generated_tokens
+            self.generation_count += 1
+            if self.device == "cuda":
+                self.cuda_peak_allocated_bytes = torch.cuda.max_memory_allocated(0)
+                self.cuda_peak_reserved_bytes = torch.cuda.max_memory_reserved(0)
+            import psutil
+
+            self.process_rss_bytes = psutil.Process(os.getpid()).memory_info().rss
             return tokenizer.decode(
                 continuation,
                 skip_special_tokens=True,

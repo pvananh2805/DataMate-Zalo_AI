@@ -6,11 +6,12 @@ ghi câu trả lời cùng bằng chứng/nhật ký. Dự án hiện ưu tiên 
 planner phải tạo plan khai báo hợp lệ trước khi executor thực hiện; hệ thống
 không nhận SQL hay mã thực thi từ câu hỏi.
 
-> **Trạng thái hiện tại:** các phép toán và pipeline có unit/integration test
-trên fixture tổng hợp. Chưa có checkpoint được chọn và kiểm chứng, chưa đo
-accuracy end-to-end bằng model thật, và chưa xác minh JSONL submission với
-validator hiện hành của cuộc thi. Backend model hiện yêu cầu NVIDIA CUDA; máy
-không có GPU phù hợp không thể chạy inference thực tế.
+> **Trạng thái hiện tại:** checkpoint Qwen2.5-0.5B-Instruct đã có tại đường dẫn
+local được chỉ định và đã load/inference trên GTX 1060. Smoke test 3 câu tự
+tạo sinh ra 0 QueryPlan hợp lệ sau một lần sửa; backend đã abstain an toàn.
+Chưa có benchmark accuracy end-to-end hoặc xác minh JSONL submission với
+validator hiện hành của cuộc thi. Có thể chọn CUDA hoặc CPU tường minh; backend
+không tự fallback.
 
 ## 1. Kiến trúc
 
@@ -29,7 +30,8 @@ Schema/plan validation → data loader → deterministic executor
 
 - `scripts/run_inference.py`: entrypoint batch inference thống nhất.
 - `src/datamate/local_inference.py`: tải checkpoint từ thư mục local, tắt
-  truy cập Hugging Face Hub/offline fallback, không gọi API; yêu cầu CUDA.
+  truy cập Hugging Face Hub/offline fallback, không gọi API; CPU/CUDA phải được
+  chọn tường minh và cấu hình precision tương thích thiết bị.
 - `src/datamate/data_loader.py`, `query_plan.py`, `query_executor.py` và
   `pipeline.py`: khám phá/đọc CSV, XLSX, SQLite, kiểm tra QueryPlan và thực thi.
 - `src/datamate/business_context.py`: nạp business README, rulebook và calendar
@@ -52,10 +54,11 @@ không hỗ trợ sẽ bị từ chối, không được đoán.
 - Python **3.10–3.12**; khuyến nghị Python 3.12. Đã kiểm thử mã trên Python
   3.12.6 tại môi trường phát triển.
 - Dung lượng đĩa cho Python packages, dữ liệu và checkpoint.
-- Inference hiện cần NVIDIA GPU, driver/CUDA tương thích với bản PyTorch, VRAM
-  đủ cho checkpoint và precision đã chọn. Không có CPU fallback.
-- Checkpoint Transformers hợp lệ đã có sẵn trên máy. Dự án chưa chọn model,
-  chưa phân phối model/checkpoint và không tự tải model.
+- Inference có thể dùng NVIDIA GPU với driver/CUDA tương thích và VRAM đủ, hoặc
+  CPU khi `device` được đặt tường minh thành `cpu` cùng precision `fp32`. Không
+  tự fallback giữa thiết bị khi thiếu VRAM hoặc gặp lỗi.
+- Checkpoint Qwen2.5-0.5B-Instruct đã có sẵn tại đường dẫn local cấu hình riêng;
+  dự án không phân phối model/checkpoint và không tự tải model.
 - Dữ liệu doanh nghiệp được chuẩn bị cục bộ theo định dạng mà loader hỗ trợ.
 
 Chưa có con số VRAM tối thiểu được xác nhận: nó phụ thuộc kích thước checkpoint,
@@ -124,8 +127,12 @@ dụ `--precision fp16`.
 
 Các trường config: `input`, `business_data_root`, `model_path`, `log`,
 `submission_output` (bắt buộc); `coercions`, `rulebook`, `calendar`,
-`as_of_date`, `precision`, `max_new_tokens`, `parameter_cap` (tùy chọn). Xem
-config mẫu có giá trị mặc định và cấu trúc đầy đủ.
+`as_of_date`, `device`, `precision`, `max_prompt_tokens`, `max_new_tokens`,
+`parameter_cap` (tùy chọn). `local_files_only` phải là `true` và
+`trust_remote_code` phải là `false`; backend từ chối cấu hình ngược lại. Xem
+config mẫu. Cấu hình riêng cho checkpoint
+Qwen có tại `config/inference.qwen.local.example.json`; điều chỉnh input,
+data root và output trước khi chạy.
 
 `as_of_date` trong từng câu hỏi được ưu tiên hơn ngày mặc định cấu hình.
 Submission được ghi theo schema tham khảo trong training rulebook (`id/type/
@@ -195,16 +202,25 @@ Transformers/Hugging Face ở chế độ offline, không gọi API và không t
 Việc cài package hay lấy checkpoint trước đó có thể cần mạng; đó không phải
 inference offline.
 
-Docker hiện **chưa được xác nhận hoạt động**: repository không có Dockerfile,
-Docker CLI không có trong môi trường được kiểm tra, và guideline/interface
-Docker chính thức của cuộc thi chưa xác minh được. Vì vậy dự án không cung cấp
-container hoặc tuyên bố hỗ trợ Docker.
+Có cấu hình Docker CPU để kiểm tra plumbing local tại [DOCKER.md](DOCKER.md),
+`Dockerfile.dev` và `compose.dev.yaml`. Container chặn network lúc inference,
+mount `/data` và checkpoint chỉ đọc, ghi output vào `/result`, và dùng giới hạn
+prompt 2.048 tokens với tokenizer thực tế. Đây là cấu hình development, không
+phải image nộp cuộc thi.
+
+Quy chế DataMate công khai xác nhận inference offline, `/data` read-only,
+`/result/submission.jsonl`, tối đa 15B tham số gộp và giới hạn 6 giờ trên máy
+2× RTX 5090. Quy chế cũng dẫn tới Docker guideline riêng để xác định base image
+và runtime. Guideline đó chưa truy cập được, nên chưa thể khẳng định image dev
+tương thích yêu cầu nộp cuối; cần áp dụng đúng base image/đóng gói model theo
+hướng dẫn chính thức trước khi nộp.
 
 ## 10. Lỗi thường gặp và giới hạn
 
 - **Thiếu PyTorch/Transformers:** cài inference requirements và bản PyTorch
   đúng CUDA; không cài model tự động.
-- **CUDA không khả dụng:** backend hiện từ chối, không có CPU fallback.
+- **CUDA không khả dụng/không đủ VRAM:** backend không tự fallback; đặt
+  `device` thành `cpu` và `precision` thành `fp32` để thử CPU inference.
 - **GPU không hỗ trợ bf16:** chạy với `--precision fp16` nếu GPU hỗ trợ; nếu
   không, cần chọn cấu hình phù hợp thay vì giả định.
 - **Không tìm thấy bảng/cột:** kiểm tra business root, `business_id`, header
@@ -214,5 +230,6 @@ container hoặc tuyên bố hỗ trợ Docker.
 - **Kết quả nghiệp vụ sai:** xem QueryPlan/evidence/trace trong run log và replay
   cục bộ; không coi test fixture là bằng chứng accuracy thực tế.
 
-Xem [planning/17_DEPLOYMENT_REPORT.md](planning/17_DEPLOYMENT_REPORT.md) để biết
-chi tiết trạng thái đã kiểm chứng và các blocker triển khai.
+Xem [planning/21_LOCAL_MODEL_INTEGRATION_REPORT.md](planning/21_LOCAL_MODEL_INTEGRATION_REPORT.md)
+để biết kết quả smoke test model và các giới hạn hiện tại; báo cáo deployment
+trước đó ở [planning/17_DEPLOYMENT_REPORT.md](planning/17_DEPLOYMENT_REPORT.md).

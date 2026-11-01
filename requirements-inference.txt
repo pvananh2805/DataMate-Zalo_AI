@@ -2,3 +2,6 @@
 # Install the CUDA-matched PyTorch build separately before this file.
 torch>=2.5,<3
 transformers>=4.46,<5
+tokenizers>=0.20,<0.22
+huggingface-hub>=0.26,<1
+psutil>=5.9,<8

@@ -1102,6 +1102,7 @@ def test_question_planning_failure_is_recorded_without_a_fake_plan(
     assert record["query_plan"] is None
     assert record["execution_trace"] is None
     assert "QuestionUnderstandingError" in record["error"]
+    assert "model_output_prefix='not JSON'" in record["error"]
 
 
 @pytest.mark.parametrize(
