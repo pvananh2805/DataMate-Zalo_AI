@@ -17,6 +17,45 @@ class LocalModelError(QuestionUnderstandingError):
     """Raised when a local inference checkpoint cannot be loaded or used safely."""
 
 
+class JsonClosingStoppingCriteria:
+    """Stop generation immediately when a balanced top-level JSON object has closed."""
+    def __init__(self, tok, p_len):
+        self.tokenizer = tok
+        self.prompt_len = p_len
+
+    def __call__(self, input_ids, scores, **kwargs):
+        if input_ids.shape[-1] <= self.prompt_len + 5:
+            return False
+        last_tok = self.tokenizer.decode([input_ids[0, -1]], skip_special_tokens=False)
+        if "}" not in last_tok and "\n" not in last_tok:
+            return False
+        gen_tokens = input_ids[0, self.prompt_len:]
+        text = self.tokenizer.decode(gen_tokens, skip_special_tokens=True)
+        depth = 0
+        in_string = False
+        escape = False
+        has_opened = False
+        for ch in text:
+            if escape:
+                escape = False
+                continue
+            if ch == '\\':
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if not in_string:
+                if ch == '{':
+                    depth += 1
+                    has_opened = True
+                elif ch == '}':
+                    depth -= 1
+                    if has_opened and depth == 0:
+                        return True
+        return False
+
+
 def _validate_checkpoint_files(model_path: Path) -> None:
     config_path = model_path / "config.json"
     if not config_path.is_file():
@@ -449,6 +488,15 @@ class LocalTransformersBackend:
                 generation_options["max_time"] = self.generation_timeout_seconds
             if tokenizer.eos_token_id is not None:
                 generation_options["eos_token_id"] = tokenizer.eos_token_id
+
+            try:
+                from transformers import StoppingCriteriaList
+                generation_options["stopping_criteria"] = StoppingCriteriaList([
+                    JsonClosingStoppingCriteria(tokenizer, input_ids.shape[-1])
+                ])
+            except Exception:
+                pass
+
             generation_started = time.monotonic()
             if self.device == "cuda":
                 torch.cuda.reset_peak_memory_stats(0)

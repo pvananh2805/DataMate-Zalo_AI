@@ -23,6 +23,9 @@ SUPPORTED_SUFFIXES: dict[str, SourceFormat] = {
     ".db": "sqlite",
 }
 
+_DISCOVERY_CACHE: dict[Path, tuple[tuple[tuple[str, float, int], ...], tuple[TableRef, ...]]] = {}
+_ROW_CACHE: dict[tuple[Path, str, str | None], tuple[float, int, tuple[tuple[object, ...], ...]]] = {}
+
 
 class DataLoadError(Exception):
     """Raised when a source cannot be catalogued or read without data loss."""
@@ -57,8 +60,25 @@ class BusinessDataLoader:
             raise DataLoadError(f"Business directory does not exist: {root}")
         self.root = root.resolve()
 
+    def _dir_signature(self) -> tuple[tuple[str, float, int], ...]:
+        sig: list[tuple[str, float, int]] = []
+        for path in sorted(self.root.rglob("*"), key=lambda item: item.as_posix().casefold()):
+            if path.is_file() and not path.is_symlink() and path.suffix.lower() in SUPPORTED_SUFFIXES:
+                try:
+                    st = path.stat()
+                    sig.append((path.name, st.st_mtime, st.st_size))
+                except OSError:
+                    pass
+        return tuple(sig)
+
     def discover(self) -> tuple[TableRef, ...]:
         """Return supported tables in deterministic path/sheet/table order."""
+        sig = self._dir_signature()
+        if self.root in _DISCOVERY_CACHE:
+            cached_sig, cached_tables = _DISCOVERY_CACHE[self.root]
+            if cached_sig == sig:
+                return cached_tables
+
         tables: list[TableRef] = []
         candidates = sorted(self.root.rglob("*"), key=lambda item: item.as_posix().casefold())
         for path in candidates:
@@ -76,7 +96,10 @@ class BusinessDataLoader:
                 tables.extend(self._catalog_workbook(path, relative_path))
             else:
                 tables.extend(self._catalog_sqlite(path, relative_path))
-        return tuple(tables)
+        
+        result = tuple(tables)
+        _DISCOVERY_CACHE[self.root] = (sig, result)
+        return result
 
     def iter_rows(
         self, table: TableRef, *, batch_size: int = 512
@@ -85,13 +108,44 @@ class BusinessDataLoader:
         if batch_size < 1:
             raise ValueError("batch_size must be greater than zero")
         path = self._safe_source_path(table.relative_path)
+
+        cache_key = (self.root, table.relative_path, table.sheet_name or table.sqlite_table)
+        file_stat = None
+        try:
+            st = path.stat()
+            file_stat = (st.st_mtime, st.st_size)
+        except OSError:
+            pass
+
+        if file_stat is not None and cache_key in _ROW_CACHE:
+            cached_mtime, cached_size, cached_rows = _ROW_CACHE[cache_key]
+            if cached_mtime == file_stat[0] and cached_size == file_stat[1]:
+                return iter(cached_rows)
+
         if table.source_format == "csv":
-            return self._iter_csv_rows(path, table)
-        if table.source_format == "xlsx":
-            return self._iter_excel_rows(path, table)
-        if table.source_format == "sqlite":
-            return self._iter_sqlite_rows(path, table, batch_size)
-        raise DataLoadError(f"Unsupported source format: {table.source_format}")
+            stream = self._iter_csv_rows(path, table)
+        elif table.source_format == "xlsx":
+            stream = self._iter_excel_rows(path, table)
+        elif table.source_format == "sqlite":
+            stream = self._iter_sqlite_rows(path, table, batch_size)
+        else:
+            raise DataLoadError(f"Unsupported source format: {table.source_format}")
+
+        collected = []
+        for r in stream:
+            collected.append(r)
+            if len(collected) > 150000:
+                def _stream_remainder(head, tail):
+                    yield from head
+                    yield from tail
+                return _stream_remainder(collected, stream)
+
+        cached_rows = tuple(collected)
+        if file_stat is not None:
+            if len(_ROW_CACHE) >= 32:
+                _ROW_CACHE.pop(next(iter(_ROW_CACHE)))
+            _ROW_CACHE[cache_key] = (file_stat[0], file_stat[1], cached_rows)
+        return iter(cached_rows)
 
     def iter_table_rows(
         self, tables: Iterable[TableRef], *, batch_size: int = 512

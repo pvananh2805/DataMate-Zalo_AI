@@ -503,6 +503,68 @@ def _calendar_prompt_data(
     }
 
 
+def _prune_schema_for_prompt(
+    question: str,
+    as_of_date: str | None,
+    full_schema: Mapping[str, tuple[str, ...]],
+) -> dict[str, list[str]]:
+    if len(full_schema) <= 4:
+        return {t: list(cols) for t, cols in sorted(full_schema.items())}
+
+    q_low = question.lower()
+    m_yr = re.findall(r"\b(202[0-9])\b", q_low)
+    target_years = set(m_yr)
+    if as_of_date:
+        m_asof_yr = re.match(r"(202[0-9])", as_of_date)
+        if m_asof_yr:
+            target_years.add(m_asof_yr.group(1))
+
+    m_month = re.findall(r"(?:tháng|t|t0)\s*(1[0-2]|[1-9])\b", q_low)
+    target_months = set(m_month)
+    if as_of_date:
+        m_asof_m = re.match(r"202[0-9]-0?(1[0-2]|[1-9])", as_of_date)
+        if m_asof_m:
+            target_months.add(m_asof_m.group(1))
+
+    q_words = [w for w in re.findall(r"[\w]+", q_low) if len(w) >= 3]
+    dim_keywords = (
+        "danhsach", "danhmuc", "quydoi", "hanghoa", "banggia",
+        "bang_gia", "ton_kho", "tonkho", "phieuthu", "chiphi",
+        "nhaphang", "baocaoca", "quanly",
+    )
+
+    matched_tables: list[str] = []
+    for t in sorted(full_schema.keys()):
+        t_low = t.lower()
+        t_clean = re.sub(r"[_\-\s]", "", t_low)
+
+        if any(dk in t_clean for dk in dim_keywords):
+            matched_tables.append(t)
+            continue
+
+        t_years = re.findall(r"\b(202[0-9])\b|[_\-\.\/](202[0-9])", t_low)
+        t_year_strs = {y[0] or y[1] for y in t_years if y[0] or y[1]}
+        t_months = re.findall(r"[_\-\.\/tT](0?[1-9]|1[0-2])[_\-\.\/]", t_low)
+
+        if target_months and t_months and not (target_months & set(t_months)):
+            continue
+        if target_years and t_year_strs and not (target_years & t_year_strs):
+            continue
+
+        if (target_years and t_year_strs) or (target_months and t_months):
+            matched_tables.append(t)
+            continue
+
+        stopwords = {"năm", "tháng", "ngày", "bao", "nhiêu", "tiền", "quán", "cho", "tôi", "biết", "món", "bán"}
+        if any(w in t_low for w in q_words if w not in stopwords):
+            matched_tables.append(t)
+            continue
+
+    if 1 <= len(matched_tables) < len(full_schema):
+        return {t: list(full_schema[t]) for t in matched_tables}
+    return {t: list(cols) for t, cols in sorted(full_schema.items())}
+
+
 def build_planning_prompt(
     question: str,
     context: QuestionContext,
@@ -522,7 +584,7 @@ def build_planning_prompt(
     if (max_prompt_tokens is None) != (token_counter is None):
         raise ValueError("max_prompt_tokens and token_counter must be provided together")
 
-    schema = {table: list(columns) for table, columns in sorted(context.schema.items())}
+    schema = _prune_schema_for_prompt(question, context.as_of_date, context.schema)
     calendar = _calendar_prompt_data(question, context)
     rulebook_limit = _MAX_PROMPT_RULEBOOK_CHARS
     readme_limit = len(context.business_readme or "")
@@ -982,6 +1044,8 @@ def heal_query_plan(
         if any(st in res_col.column.lower() for st in ("trạng thái", "tiến độ", "status")):
             if val_str in ("đã giao", "hoàn thành", "da giao", "thành công", "xong", "đã thanh toán", "thanh toán", "đã xong"):
                 continue
+        if op == "is_null":
+            continue
         filtered_filters.append(Filter(column=res_col, operator=op, value=f.value))
 
     m_nhom = re.search(r'nhóm\s+([\w\s]+?)(?:\s+tháng|\s+bán|\s+năm|\s+trong|$)', q_low)

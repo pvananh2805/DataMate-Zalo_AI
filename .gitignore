@@ -17,3 +17,5 @@ manual_test/examples/business/*
 !manual_test/examples/business/biz_demo/
 manual_test/examples/business/biz_demo/*
 !manual_test/examples/business/biz_demo/sales.sqlite
+local_reports/
+
