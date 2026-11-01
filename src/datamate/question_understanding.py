@@ -919,13 +919,18 @@ def heal_query_plan(
         else None
     )
 
+    agg_aliases = {a.alias for a in new_aggs}
+    new_group_filters = tuple(
+        gf for gf in plan.group_filters if gf.alias in agg_aliases
+    )
+
     return QueryPlan(
         base_table=new_base,
         joins=new_joins,
         selected_columns=new_selected,
         filters=new_filters,
         group_by=new_group_by,
-        group_filters=plan.group_filters,
+        group_filters=new_group_filters,
         group_exclusions=plan.group_exclusions,
         aggregations=new_aggs,
         calculations=plan.calculations,
