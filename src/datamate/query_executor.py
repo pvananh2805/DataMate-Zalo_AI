@@ -343,6 +343,8 @@ def _next_bucket_start(day: date, granularity: str) -> date:
 
 
 def _to_decimal(value: object, *, alias: str) -> Decimal:
+    if value is None:
+        return Decimal(0)
     if isinstance(value, bool):
         raise QueryExecutionError(f"Aggregation {alias!r} requires numeric values")
     if isinstance(value, (int, float, Decimal)):
@@ -386,10 +388,34 @@ def _to_decimal(value: object, *, alias: str) -> Decimal:
                 return Decimal(num_str.replace(",", ""))
             except InvalidOperation:
                 pass
+
+        # Leading number followed by complex unit or text description: '1 bao 25kg', '2 hộp 30'
+        m_lead = re.match(r"^([+-]?[\d.,]+)\s+\S.*$", v)
+        if m_lead:
+            num_str = m_lead.group(1)
+            try:
+                if re.match(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$", num_str):
+                    return Decimal(num_str.replace(",", ""))
+                return Decimal(num_str)
+            except InvalidOperation:
+                pass
         # Standard thousands comma with 3 digits: 21,000.0000 or 1,500,000
         if re.match(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$", v):
             try:
                 return Decimal(v.replace(",", ""))
+            except InvalidOperation:
+                pass
+
+        if v in ("", "-", " - ", "None", "null"):
+            return Decimal(0)
+        try:
+            return Decimal(v)
+        except InvalidOperation:
+            pass
+        # Plain number without commas (e.g. '27800' or '15.5')
+        if re.match(r"^[+-]?\d+(\.\d+)?$", v):
+            try:
+                return Decimal(v)
             except InvalidOperation:
                 pass
     raise QueryExecutionError(f"Aggregation {alias!r} requires numeric values")
@@ -1178,6 +1204,8 @@ def execute_query_plan(
                 for ref in plan.selected_columns
             }
             rows.append(row)
+            if not plan.sort and plan.limit is not None and len(rows) >= plan.limit:
+                break
             if len(rows) > max_result_rows:
                 raise QueryExecutionError(
                     f"Result row count exceeds configured limit {max_result_rows}"

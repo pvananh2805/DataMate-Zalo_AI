@@ -998,7 +998,7 @@ def heal_query_plan(
         except ValueError:
             pass
 
-    has_today = "hôm nay" in q_low or "hom nay" in q_low
+    has_today = any(w in q_low for w in ("hôm nay", "hom nay", "bữa nay", "bua nay", "hôm ni", "hom ni"))
     if has_today and as_of_date and date_col:
         filtered_filters.append(Filter(column=date_col, operator="eq", value=as_of_date))
 
@@ -1078,8 +1078,12 @@ def heal_query_plan(
                         break
 
     new_joins = tuple(new_joins_list)
-    new_filters = tuple(filtered_filters)
-    new_group_by = tuple(resolve_col(g) for g in plan.group_by)
+    involved_tables = {new_base}
+    for j in new_joins_list:
+        if j.left and j.left.table: involved_tables.add(j.left.table)
+        if j.right and j.right.table: involved_tables.add(j.right.table)
+    new_filters = tuple(f for f in filtered_filters if f.column and f.column.table in involved_tables)
+    new_group_by = tuple(g for g in (resolve_col(g) for g in plan.group_by) if g and g.table in involved_tables)
     new_limit = plan.limit
     is_top = any(b in q_low for b in ("bán chạy", "nhiều ly nhất", "nhiều nhất", "hot nhất", "top"))
     if is_top:
@@ -1093,7 +1097,7 @@ def heal_query_plan(
         m_lim = re.search(r'\b(\d+)\s*(?:món|hàng|sản phẩm|mặt hàng)\b', q_low)
         if m_lim:
             new_limit = int(m_lim.group(1))
-        elif "nhiều ly nhất" in q_low or "nhiều nhất" in q_low:
+        elif "nhiều ly nhất" in q_low or "nhiều nhất" in q_low or "nhất" in q_low or "nhat" in q_low:
             new_limit = 1
         qty_cols = [bc for bc in base_cols if any(q in bc.lower() for q in ("sl bán", "số lượng sản phẩm", "số lượng", "s.l", "sl (đv cơ bản)", "slg", "sl"))]
         if qty_cols:
@@ -1101,7 +1105,11 @@ def heal_query_plan(
             top_aggs = (Aggregation(function="sum", column=qty_col_ref, alias="tong_sl"),)
         else:
             top_aggs = None
-    if plan.output_type == "number":
+    if is_top and new_limit is None:
+        new_limit = 1
+    if not plan.aggregations and not plan.group_by and new_limit is None:
+        new_limit = 10
+    if plan.output_type in ("number", "percent", "boolean", "date"):
         new_group_by = ()
 
     valid_aggs = []
@@ -1131,7 +1139,9 @@ def heal_query_plan(
                 filters=tuple(
                     Filter(column=resolve_col(f.column), operator=f.operator, value=f.value)
                     for f in a.filters
-                    if resolve_col(f.column) and resolve_col(f.column).column in schema.get(resolve_col(f.column).table, ())
+                    if resolve_col(f.column)
+                    and resolve_col(f.column).table in involved_tables
+                    and resolve_col(f.column).column in schema.get(resolve_col(f.column).table, ())
                 ),
                 time_range=a.time_range,
                 unit_conversion=a.unit_conversion,
@@ -1172,7 +1182,7 @@ def heal_query_plan(
         else:
             new_group_by = (new_group_by[0],)
 
-    new_selected = tuple(resolve_col(c) for c in plan.selected_columns)
+    new_selected = tuple(c for c in (resolve_col(c) for c in plan.selected_columns) if c and c.table in involved_tables)
     if new_group_by or new_aggs:
         grp_col_names = {g.column for g in new_group_by}
         new_selected = tuple(c for c in new_selected if c.column in grp_col_names)
@@ -1201,11 +1211,12 @@ def heal_query_plan(
     new_sort_list = []
     for s in plan.sort:
         resolved_key = resolve_col(s.key) if isinstance(s.key, ColumnRef) else s.key
-        if isinstance(resolved_key, ColumnRef) and resolved_key.column in agg_cols:
-            new_sort_list.append(Sort(key=agg_cols[resolved_key.column], direction=s.direction))
-        elif isinstance(resolved_key, str) and resolved_key in agg_cols:
-            new_sort_list.append(Sort(key=agg_cols[resolved_key], direction=s.direction))
-        else:
+        if isinstance(resolved_key, ColumnRef):
+            if resolved_key.column in agg_cols:
+                new_sort_list.append(Sort(key=agg_cols[resolved_key.column], direction=s.direction))
+            elif resolved_key.table in involved_tables:
+                new_sort_list.append(Sort(key=resolved_key, direction=s.direction))
+        elif isinstance(resolved_key, str):
             new_sort_list.append(Sort(key=resolved_key, direction=s.direction))
     new_calculations = plan.calculations
     if any(tb in q_low for tb in ("trung bình mỗi đơn", "trung bình mổi đơn", "trung bình 1 đơn", "tb mỗi đơn")):
@@ -1222,7 +1233,7 @@ def heal_query_plan(
                 Calculation(left="tong_tien", right="so_don", function="ratio", alias="tb_don", rounding_places=0),
             )
 
-    if plan.output_type == "number":
+    if plan.output_type in ("number", "percent", "boolean", "date"):
         new_sort = ()
     elif is_top and new_aggs:
         new_sort = (Sort(key=new_aggs[0].alias, direction="desc"),)
@@ -1365,10 +1376,10 @@ class JsonPlanAdapter:
                         group_filters=plan.group_filters,
                         group_exclusions=plan.group_exclusions,
                         aggregations=plan.aggregations,
-                        calculations=new_calculations,
+                        calculations=plan.calculations,
                         count_groups=plan.count_groups,
                         sort=plan.sort,
-                        limit=new_limit,
+                        limit=plan.limit,
                         time_range=plan.time_range,
                         time_buckets=plan.time_buckets,
                         business_rules=plan.business_rules,

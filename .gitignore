@@ -3,7 +3,10 @@
 __pycache__/
 .pytest_cache/
 *.py[cod]
+.env
 config/inference.local.json
+config/inference.*_test.json
+config/inference.test_*.json
 manual_test/*
 !manual_test/README.md
 !manual_test/examples/
@@ -18,4 +21,13 @@ manual_test/examples/business/*
 manual_test/examples/business/biz_demo/*
 !manual_test/examples/business/biz_demo/sales.sqlite
 local_reports/
-
+output/
+data/train/
+data/public_test/data/
+data/public_test/calendar.csv
+data/public_test/rulebook.md
+data/public_test/questions.jsonl
+data/public_test/questions_*.jsonl
+data/public_test/run.jsonl
+data/public_test/submission.jsonl
+data/public_test/test_*.jsonl

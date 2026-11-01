@@ -3,8 +3,8 @@ import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-ground_truth_file = 'data/public_test/dapan.jsonl'
 submission_file = sys.argv[1] if len(sys.argv) > 1 else 'output/public_test/submission_10.jsonl'
+ground_truth_file = sys.argv[2] if len(sys.argv) > 2 else 'data/public_test/dapan.jsonl'
 
 gt = {}
 with open(ground_truth_file, 'r', encoding='utf-8') as f:
