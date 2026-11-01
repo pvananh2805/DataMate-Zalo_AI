@@ -305,6 +305,10 @@ class BusinessDataLoader:
                     header = first_row
                     header_row = 1
                     classification_warning = "possible_title_or_multiline_header"
+                elif second_count >= 5 and 2 <= first_count <= 4 and (first_count / second_count) <= 0.5:
+                    header = second_row
+                    header_row = 2
+                    classification_warning = "grouped_title_row_skipped"
                 else:
                     header = first_row
                     header_row = 1

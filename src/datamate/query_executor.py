@@ -85,6 +85,11 @@ def _parse_flexible_date(val: object) -> date | None:
         return val.date()
     if isinstance(val, date):
         return val
+    if isinstance(val, (int, float)) and not isinstance(val, bool) and 30000 <= val <= 65000:
+        try:
+            return (datetime(1899, 12, 30) + timedelta(days=int(val))).date()
+        except (ValueError, OverflowError):
+            pass
     if isinstance(val, str):
         text = val.strip()
         try:
@@ -107,9 +112,36 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
         return value is not None
     if value is None:
         return False
+
+    v_date = _parse_flexible_date(value)
+    if v_date is not None:
+        if op == "between" and isinstance(expected, (list, tuple)) and len(expected) == 2:
+            low_d = _parse_flexible_date(expected[0])
+            high_d = _parse_flexible_date(expected[1])
+            if low_d is not None and high_d is not None:
+                return low_d <= v_date <= high_d
+        exp_date = _parse_flexible_date(expected)
+        if exp_date is not None:
+            if op == "eq":
+                return v_date == exp_date
+            if op == "ne":
+                return v_date != exp_date
+            if op == "lt":
+                return v_date < exp_date
+            if op == "lte":
+                return v_date <= exp_date
+            if op == "gt":
+                return v_date > exp_date
+            if op == "gte":
+                return v_date >= exp_date
+
     if op == "eq":
+        if isinstance(value, str) and isinstance(expected, str):
+            return value.strip().casefold() == expected.strip().casefold()
         return value == expected
     if op == "ne":
+        if isinstance(value, str) and isinstance(expected, str):
+            return value.strip().casefold() != expected.strip().casefold()
         return value != expected
     if op == "in":
         try:
@@ -117,29 +149,23 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
         except TypeError as exc:
             raise QueryExecutionError("in filter contains unsupported values") from exc
     if op == "contains":
-        if not isinstance(value, str) or not isinstance(expected, str):
-            raise QueryExecutionError("contains requires text on both sides")
-        return expected.casefold() in value.casefold()
-    v_date = _parse_flexible_date(value)
-    exp_date = _parse_flexible_date(expected)
-    if v_date is not None and exp_date is not None:
-        if op == "between":
-            low, high = expected
-            low_d = _parse_flexible_date(low) or low
-            high_d = _parse_flexible_date(high) or high
-            return low_d <= v_date <= high_d
-        if op == "lt":
-            return v_date < exp_date
-        if op == "lte":
-            return v_date <= exp_date
-        if op == "gt":
-            return v_date > exp_date
-        if op == "gte":
-            return v_date >= exp_date
-        if op == "eq":
-            return v_date == exp_date
-        if op == "ne":
-            return v_date != exp_date
+        s_val = str(value).strip().casefold()
+        s_exp = str(expected).strip().casefold()
+        if s_exp in s_val:
+            return True
+        if s_exp.replace("/", "-") in s_val.replace("/", "-"):
+            return True
+        if s_exp.replace("-", "/") in s_val.replace("-", "/"):
+            return True
+        if v_date is not None:
+            v_iso = v_date.isoformat()
+            if s_exp in v_iso or s_exp.replace("/", "-") in v_iso:
+                return True
+            # e.g. '05-2026' or '05/2026'
+            v_my = f"{v_date.month:02d}-{v_date.year}"
+            if s_exp in v_my or s_exp.replace("/", "-") in v_my:
+                return True
+        return False
     try:
         if op == "between":
             low, high = expected
@@ -157,7 +183,6 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
             f"Incompatible filter value types for operator {op}"
         ) from exc
     raise QueryExecutionError(f"Unsupported filter operator: {op}")
-
 
 def _matches(value: object, condition: Filter) -> bool:
     return _matches_value(value, condition.operator, condition.value)
@@ -198,7 +223,6 @@ def _source_day(value: object) -> date | None:
         raise QueryExecutionError(
             "Time-range source values must be date, datetime, or ISO-8601 text"
         )
-
 
 def _time_matches(value: object, time_range: TimeRange) -> bool:
     source_day = _source_day(value)

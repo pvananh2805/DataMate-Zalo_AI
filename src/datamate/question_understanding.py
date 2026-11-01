@@ -553,6 +553,11 @@ def build_planning_prompt(
             "tương đối dựa trên as_of_date. Không tự kết luận no_data khi chưa "
             "truy vấn. Nếu ngữ cảnh ghi omitted/partial, không suy diễn phần bị "
             "lược; abstain nếu câu trả lời phụ thuộc phần đó.\n"
+            "Quy tắc chọn bảng và cột: Khi bảng phân chia theo tháng (như BanHang_T1_2025, T05-2026), "
+            "BẮT BUỘC chọn đúng bảng của tháng/năm được hỏi hoặc tương ứng với as_of_date. "
+            "Cột chứa chữ 'khách' là tên người mua (Customer), không phải tên sản phẩm; cột sản phẩm "
+            "là 'Hàng bán', 'Tên hàng', 'Tên sản phẩm', 'Mặt hàng'. Cụm từ thời gian như 'tuần rồi', "
+            "'hôm nay' là điều kiện lọc theo ngày, không lọc vào cột tên hàng.\n"
             "Chỉ dùng phép toán executor hỗ trợ. business_rules luôn là []; quy tắc "
             "không biểu diễn được bằng plan thì abstain. Dùng count_distinct cho "
             "đối tượng duy nhất, group_exclusions khi phải loại cả nhóm, và "
@@ -663,9 +668,58 @@ def heal_query_plan(
         return plan
     valid_tables = list(schema.keys())
 
+    def _extract_target_mth_yr() -> tuple[int | None, int | None]:
+        for f in plan.filters:
+            val = str(f.value)
+            m = re.match(r"^(\d{4})-(\d{2})", val)
+            if m:
+                return int(m.group(2)), int(m.group(1))
+            m = re.match(r"^\d{1,2}[/-](\d{1,2})[/-](\d{4})", val)
+            if m:
+                return int(m.group(1)), int(m.group(2))
+        q_low = question.lower()
+        m = re.search(r'(?:tháng|t)\s*(\d{1,2})(?:[\s/._-]+năm[\s/._-]+|[\s/._-]+)(\d{4})', q_low)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        m = re.search(r'\b(\d{1,2})[/.-](\d{2,4})\b', q_low)
+        if m:
+            mth, yr = int(m.group(1)), int(m.group(2))
+            if yr < 100: yr += 2000
+            if 1 <= mth <= 12 and 2000 <= yr <= 2030:
+                return mth, yr
+        if as_of_date:
+            try:
+                d = date.fromisoformat(as_of_date[:10])
+                return d.month, d.year
+            except ValueError:
+                pass
+        return None, None
+
+    target_mth, target_yr = _extract_target_mth_yr()
+
     def resolve_table(req_table: str | None) -> str:
         if not req_table:
-            return valid_tables[0]
+            req_table = valid_tables[0]
+        if target_mth and target_yr:
+            patterns = [
+                f't{target_mth}_{target_yr}',
+                f't{target_mth:02d}_{target_yr}',
+                f't{target_mth}-{target_yr}',
+                f't{target_mth:02d}-{target_yr}',
+                f'thang{target_mth}_{target_yr}',
+                f'thang{target_mth:02d}_{target_yr}',
+                f'thang_{target_mth}_{target_yr}',
+                f'thang_{target_mth:02d}_{target_yr}',
+                f'thang{target_mth:02d}{target_yr}',
+            ]
+            monthly_matches = [t for t in valid_tables if any(p in t.lower() for p in patterns)]
+            if monthly_matches:
+                for mm in monthly_matches:
+                    prefix = Path(req_table.split("::")[0]).stem.split("_")[0].lower()
+                    if prefix in mm.lower():
+                        return mm
+                return monthly_matches[0]
+
         if req_table in valid_tables:
             return req_table
         candidates = [
@@ -711,14 +765,32 @@ def heal_query_plan(
             return ColumnRef(table=target_table, column=matches[0])
         return ColumnRef(table=target_table, column=ref.column)
 
+    def resolve_filter_col(ref: ColumnRef | None, filter_val: object) -> ColumnRef | None:
+        col_ref = resolve_col(ref)
+        if col_ref is None:
+            return None
+        target_cols = list(schema.get(col_ref.table, ()))
+        c_low = col_ref.column.lower()
+        if "khách" in c_low and not isinstance(filter_val, (int, float)):
+            for prod_name in ("hàng bán", "tên hàng", "tên sản phẩm", "tên hàng hóa", "mặt hàng"):
+                for tc in target_cols:
+                    if tc.lower() == prod_name or (prod_name in tc.lower() and "khách" not in tc.lower()):
+                        return ColumnRef(table=col_ref.table, column=tc)
+        return col_ref
+
     new_joins = tuple(
         Join(left=resolve_col(j.left), right=resolve_col(j.right), kind=j.kind)
         for j in plan.joins
     )
-    new_filters = tuple(
-        Filter(column=resolve_col(f.column), operator=f.operator, value=f.value)
-        for f in plan.filters
-    )
+    temporal_phrases = {"tuần rồi", "tuần này", "hôm nay", "tháng này", "tháng trước", "hôm qua"}
+    filtered_filters = []
+    for f in plan.filters:
+        val_str = str(f.value).strip().lower()
+        if val_str in temporal_phrases:
+            continue
+        res_col = resolve_filter_col(f.column, f.value)
+        filtered_filters.append(Filter(column=res_col, operator=f.operator, value=f.value))
+    new_filters = tuple(filtered_filters)
     new_group_by = tuple(resolve_col(g) for g in plan.group_by)
     new_aggs = tuple(
         Aggregation(
