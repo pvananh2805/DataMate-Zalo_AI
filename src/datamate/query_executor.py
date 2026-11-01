@@ -292,7 +292,10 @@ def _time_matches(value: object, time_range: TimeRange) -> bool:
 
 
 def _time_bucket(value: object, bucket: TimeBucket) -> str | None:
-    source_day = _source_day(value)
+    try:
+        source_day = _source_day(value)
+    except QueryExecutionError:
+        source_day = _parse_flexible_date(value)
     if source_day is None:
         return None
     if bucket.granularity == "day":
@@ -602,18 +605,21 @@ def _aggregate(
         ]
         if plan.aggregations and group_refs and not any(matched_aggregations):
             continue
+        bucket_vals = tuple(
+            _time_bucket(
+                _row_value(context, column_indexes, bucket.column),
+                bucket,
+            )
+            for bucket in time_buckets
+        )
+        if time_buckets and any(bv is None for bv in bucket_vals):
+            continue
         key = (
             *(
                 _row_value(context, column_indexes, ref)
                 for ref in group_refs
             ),
-            *(
-                _time_bucket(
-                    _row_value(context, column_indexes, bucket.column),
-                    bucket,
-                )
-                for bucket in time_buckets
-            ),
+            *bucket_vals,
         )
         try:
             if key not in grouped:
@@ -1004,7 +1010,11 @@ def execute_query_plan(
 
     def record_time_coverage(table: str, row: Row) -> None:
         for column in time_columns.get(table, ()):
-            day = _source_day(row[column_indexes[table][column]])
+            val = row[column_indexes[table][column]]
+            try:
+                day = _source_day(val)
+            except QueryExecutionError:
+                day = _parse_flexible_date(val)
             if day is None:
                 continue
             coverage = time_coverage[f"{table}.{column}"]

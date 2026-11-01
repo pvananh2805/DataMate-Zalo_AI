@@ -512,19 +512,24 @@ def _prune_schema_for_prompt(
         return {t: list(cols) for t, cols in sorted(full_schema.items())}
 
     q_low = question.lower()
-    m_yr = re.findall(r"\b(202[0-9])\b", q_low)
-    target_years = set(m_yr)
+    m_yr = re.findall(r"\b(202[0-9])\b|[/_-](2[4-9])\b", q_low)
+    target_years = set()
+    for y4, y2 in m_yr:
+        if y4:
+            target_years.add(y4)
+        elif y2:
+            target_years.add(f"20{y2}")
     if as_of_date:
         m_asof_yr = re.match(r"(202[0-9])", as_of_date)
         if m_asof_yr:
             target_years.add(m_asof_yr.group(1))
 
-    m_month = re.findall(r"(?:tháng|t|t0)\s*(1[0-2]|[1-9])\b", q_low)
-    target_months = set(m_month)
+    m_month = re.findall(r"(?:tháng|thg|th|t)\s*0?([1-9]|1[0-2])\b", q_low)
+    target_months = {int(m) for m in m_month}
     if as_of_date:
         m_asof_m = re.match(r"202[0-9]-0?(1[0-2]|[1-9])", as_of_date)
         if m_asof_m:
-            target_months.add(m_asof_m.group(1))
+            target_months.add(int(m_asof_m.group(1)))
 
     q_words = [w for w in re.findall(r"[\w]+", q_low) if len(w) >= 3]
     dim_keywords = (
@@ -544,14 +549,15 @@ def _prune_schema_for_prompt(
 
         t_years = re.findall(r"\b(202[0-9])\b|[_\-\.\/](202[0-9])", t_low)
         t_year_strs = {y[0] or y[1] for y in t_years if y[0] or y[1]}
-        t_months = re.findall(r"[_\-\.\/tT](0?[1-9]|1[0-2])[_\-\.\/]", t_low)
+        t_months_raw = re.findall(r"(?:[_\-\.\/tT]|thang|tháng)(0?[1-9]|1[0-2])(?:[_\-\.\/]|$)", t_low)
+        t_months = {int(m) for m in t_months_raw}
 
-        if target_months and t_months and not (target_months & set(t_months)):
+        if target_months and t_months and not (target_months & t_months):
             continue
         if target_years and t_year_strs and not (target_years & t_year_strs):
             continue
 
-        if (target_years and t_year_strs) or (target_months and t_months):
+        if (target_years and t_year_strs and (target_years & t_year_strs)) or (target_months and t_months and (target_months & t_months)):
             matched_tables.append(t)
             continue
 
@@ -760,21 +766,30 @@ def heal_query_plan(
 
     def _extract_target_mth_yr() -> tuple[int | None, int | None]:
         q_low = question.lower()
-        m = re.search(r'(?:tháng|t)\s*(\d{1,2})(?:[\s/._-]+năm[\s/._-]+|[\s/._-]+)(\d{4})', q_low)
-        if m:
-            return int(m.group(1)), int(m.group(2))
-        m = re.search(r'\b(?:tháng|t)\s*(\d{1,2})\b', q_low)
+        m = re.search(r'(?:tháng|thg|th|t)\s*(\d{1,2})[/.-](\d{2,4})\b', q_low)
         if m:
             mth = int(m.group(1))
-            yr = int(as_of_date[:4]) if as_of_date else 2025
+            yr = int(m.group(2))
+            if yr < 100:
+                yr += 2000
+            return mth, yr
+        m = re.search(r'(?:tháng|thg|th|t)\s*(\d{1,2})(?:[\s/._-]+năm[\s/._-]+|[\s/._-]+)(\d{4})', q_low)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        m = re.search(r'\b(?:tháng|thg|th|t)\s*(\d{1,2})\b', q_low)
+        if m:
+            mth = int(m.group(1))
+            yr = int(as_of_date[:4]) if as_of_date else 2026
             return mth, yr
         m = re.search(r'\b(\d{1,2})[/.-](\d{1,2})\b', q_low)
         if m:
             n1, n2 = int(m.group(1)), int(m.group(2))
             if 1 <= n1 <= 12 and n2 > 12:
-                return n1, int(as_of_date[:4]) if as_of_date else 2026
+                yr_val = (2000 + n2) if n2 < 100 else n2
+                return n1, yr_val
             elif 1 <= n2 <= 12 and n1 > 12:
-                return n2, int(as_of_date[:4]) if as_of_date else 2026
+                yr_val = (2000 + n1) if n1 < 100 else n1
+                return n2, yr_val
         for f in plan.filters:
             val = str(f.value)
             m = re.match(r"^(\d{4})-(\d{2})", val)
@@ -814,18 +829,18 @@ def heal_query_plan(
             if not mth_conflict and not yr_conflict:
                 return cleaned if cleaned in valid_tables else cleaned_colon
         if target_mth and target_yr:
-            patterns = [
-                f't{target_mth}_{target_yr}',
-                f't{target_mth:02d}_{target_yr}',
-                f't{target_mth}-{target_yr}',
-                f't{target_mth:02d}-{target_yr}',
-                f'thang{target_mth}_{target_yr}',
-                f'thang{target_mth:02d}_{target_yr}',
-                f'thang_{target_mth}_{target_yr}',
-                f'thang_{target_mth:02d}_{target_yr}',
-                f'thang{target_mth:02d}{target_yr}',
-            ]
-            monthly_matches = [t for t in valid_tables if any(p in t.lower() for p in patterns)]
+            def matches_mth_yr(t_name: str) -> bool:
+                t_l = t_name.lower()
+                has_yr = str(target_yr) in t_l or str(target_yr)[2:] in t_l
+                has_mth = any(p in t_l for p in (
+                    f"t{target_mth:02d}", f"t{target_mth}",
+                    f"thang{target_mth:02d}", f"thang{target_mth}",
+                    f"thang_{target_mth:02d}", f"thang_{target_mth}",
+                    f"-{target_mth:02d}", f"-{target_mth}",
+                    f"_{target_mth:02d}", f"_{target_mth}",
+                ))
+                return has_yr and has_mth
+            monthly_matches = [t for t in valid_tables if matches_mth_yr(t)]
             if monthly_matches:
                 for mm in monthly_matches:
                     prefix = Path(cleaned_colon.split(":")[0]).stem.split("_")[0].lower()
@@ -901,14 +916,23 @@ def heal_query_plan(
         if j.right.table:
             table_map[j.right.table] = resolve_table(j.right.table)
 
+    alias_map: dict[str, str] = {}
+    for sc in plan.selected_columns:
+        if sc and getattr(sc, 'alias', None) and getattr(sc, 'column', None):
+            alias_map[sc.alias.lower()] = sc.column
+
     def resolve_col(ref: ColumnRef | None) -> ColumnRef | None:
         if ref is None:
             return None
         target_table = table_map.get(ref.table, resolve_table(ref.table))
         valid_cols = list(schema.get(target_table, ()))
-        if not valid_cols or ref.column in valid_cols:
-            return ColumnRef(table=target_table, column=ref.column)
-        c_norm = _norm(ref.column)
+        col_name = ref.column
+        if col_name and col_name.lower() in alias_map:
+            col_name = alias_map[col_name.lower()]
+
+        if not valid_cols or col_name in valid_cols:
+            return ColumnRef(table=target_table, column=col_name)
+        c_norm = _norm(col_name)
         for vc in valid_cols:
             if c_norm == _norm(vc):
                 return ColumnRef(table=target_table, column=vc)
@@ -916,7 +940,11 @@ def heal_query_plan(
         if matches:
             return ColumnRef(table=target_table, column=matches[0])
 
-        c_low = ref.column.strip().lower()
+        c_low = col_name.strip().lower()
+        if any(c in c_low for c in ("customer", "khách", "khach")):
+            for vc in valid_cols:
+                if "khách" in vc.lower():
+                    return ColumnRef(table=target_table, column=vc)
         # 1. Product synonyms
         if any(p in c_low for p in ("tên hàng", "sản phẩm", "hàng bán", "mặt hàng", "tên món", "product")):
             for vc in valid_cols:
@@ -935,10 +963,10 @@ def heal_query_plan(
                     return ColumnRef(table=target_table, column=vc)
 
         # 3. Quantity synonyms
-        if any(q in c_low for q in ("quantity", "qty", "số lượng", "sl")):
+        if any(q in c_low for q in ("quantity", "qty", "sales", "số lượng", "sl", "bán", "ban")):
             for vc in valid_cols:
                 vc_low = vc.lower()
-                if any(q == vc_low for q in ("sl bán", "số lượng", "sl", "số lượng bán", "số lượng sản phẩm")):
+                if any(q == vc_low for q in ("sl bán", "số lượng", "sl", "số lượng bán", "số lượng sản phẩm", "s.l")):
                     return ColumnRef(table=target_table, column=vc)
             for vc in valid_cols:
                 if "số lượng" in vc.lower() or "sl" in vc.lower():
@@ -1039,7 +1067,10 @@ def heal_query_plan(
             if res_col.column not in v_cols:
                 continue
         op = f.operator
-        if val_str in ("trà", "tra") and op == "eq":
+        is_prod_col = any(p in res_col.column.lower() for p in ("hàng bán", "tên sản phẩm", "tên hàng", "mặt hàng", "sản phẩm", "tên hàng hóa", "tên món", "món ăn"))
+        if is_prod_col and op == "eq" and isinstance(f.value, str):
+            op = "contains"
+        elif val_str in ("trà", "tra") and op == "eq":
             op = "contains"
         if any(st in res_col.column.lower() for st in ("trạng thái", "tiến độ", "status")):
             if val_str in ("đã giao", "hoàn thành", "da giao", "thành công", "xong", "đã thanh toán", "thanh toán", "đã xong"):
@@ -1127,10 +1158,11 @@ def heal_query_plan(
                     money_cols = [bc for bc in base_cols if any(m in bc.lower() for m in ("thành tiền", "tổng thanh toán", "tổng tiền", "tiền hàng", "doanh thu", "tiền"))]
                     if money_cols:
                         col = ColumnRef(table=new_base, column=money_cols[0])
-                elif any(q in c_low or q in q_low for q in ("quantity", "qty", "số lượng", "sl")):
+                elif any(q in c_low or q in q_low for q in ("quantity", "qty", "sales", "số lượng", "sl", "bán")):
                     qty_cols = [bc for bc in base_cols if any(q in bc.lower() for q in ("sl bán", "số lượng", "sl", "s.l"))]
                     if qty_cols:
                         col = ColumnRef(table=new_base, column=qty_cols[0])
+
         valid_aggs.append(
             Aggregation(
                 function=a.function,
@@ -1218,31 +1250,168 @@ def heal_query_plan(
                 new_sort_list.append(Sort(key=resolved_key, direction=s.direction))
         elif isinstance(resolved_key, str):
             new_sort_list.append(Sort(key=resolved_key, direction=s.direction))
+    new_output_type = plan.output_type
     new_calculations = plan.calculations
-    if any(tb in q_low for tb in ("trung bình mỗi đơn", "trung bình mổi đơn", "trung bình 1 đơn", "tb mỗi đơn")):
+    is_avg_q = any(tb in q_low for tb in ("trung bình mỗi đơn", "trung bình mổi đơn", "trung bình 1 đơn", "tb mỗi đơn", "bình quân 1 phiếu", "binh quan 1 phieu", "bình quân mỗi đơn", "binh quan moi don", "dthu bình quân", "doanh thu bình quân", "trung bình một đơn", "trung bình 1 phiếu"))
+    if is_avg_q:
         order_cols = [c for c in base_cols if any(o in c.lower() for o in ("đơn số", "mã đơn", "ma don", "bill", "hđ", "số phiếu", "no."))]
-        line_money_cols = [c for c in base_cols if any(m in c.lower() for m in ("thành tiền (đ)", "thành tiền", "tt", "amount"))]
+        line_money_cols = [c for c in base_cols if any(m in c.lower() for m in ("thành tiền (đ)", "thành tiền", "tt", "amount", "tổng tiền", "tổng cộng", "tiền"))]
         target_money_col = ColumnRef(table=new_base, column=line_money_cols[0]) if line_money_cols else (new_aggs[0].column if new_aggs else None)
-        if order_cols and target_money_col:
-            order_col_ref = ColumnRef(table=new_base, column=order_cols[0])
-            new_aggs = (
-                Aggregation(function="sum", column=target_money_col, alias="tong_tien"),
-                Aggregation(function="count_distinct", column=order_col_ref, alias="so_don"),
-            )
+        if target_money_col:
+            if order_cols:
+                order_col_ref = ColumnRef(table=new_base, column=order_cols[0])
+                new_aggs = (
+                    Aggregation(function="sum", column=target_money_col, alias="tong_tien"),
+                    Aggregation(function="count_distinct", column=order_col_ref, alias="so_don"),
+                )
+            else:
+                new_aggs = (
+                    Aggregation(function="sum", column=target_money_col, alias="tong_tien"),
+                    Aggregation(function="count", column=target_money_col, alias="so_don"),
+                )
             new_calculations = (
                 Calculation(left="tong_tien", right="so_don", function="ratio", alias="tb_don", rounding_places=0),
             )
+            new_output_type = "number"
 
-    if plan.output_type in ("number", "percent", "boolean", "date"):
+    # Customer query
+    is_customer_q = any(k in q_low for k in ("ai là khách", "khách nào", "ai mua nhiều", "khách mua nhiều", "khách có số đơn", "khách hàng nào"))
+    if is_customer_q:
+        cust_cols = [c for c in base_cols if any(k in c.lower() for k in ("khách hàng (tên)", "tên khách", "khách hàng", "khách", "ten_khach")) and not any(bad in c.lower() for bad in ("mã", "sđt", "nhóm"))]
+        if cust_cols:
+            cust_col_ref = ColumnRef(table=new_base, column=cust_cols[0])
+            new_output_type = "string"
+            new_group_by = (cust_col_ref,)
+            new_selected = (cust_col_ref,)
+            new_limit = 1
+            order_cols = [c for c in base_cols if any(o in c.lower() for o in ("đơn", "bill", "hđ", "số phiếu", "no."))]
+            if order_cols:
+                ord_col_ref = ColumnRef(table=new_base, column=order_cols[0])
+                new_aggs = (Aggregation(function="count_distinct", column=ord_col_ref, alias="so_don"),)
+            else:
+                new_aggs = (Aggregation(function="count", column=cust_col_ref, alias="so_don"),)
+            new_sort_list = [Sort(key="so_don", direction="desc")]
+
+    # Product query
+    is_product_q = any(k in q_low for k in ("sp nào", "sản phẩm nào", "mặt hàng nào", "món nào", "hàng nào", "món gì", "món ăn nào"))
+    if is_product_q and not is_customer_q:
+        prod_cols = [c for c in base_cols if any(p in c.lower() for p in ("hàng bán", "tên sản phẩm", "tên hàng", "mặt hàng", "sản phẩm", "tên món", "hàng hóa")) and not any(bad in c.lower() for bad in ("mã", "nhóm", "giá", "tiền", "khách", "ngày"))]
+        if prod_cols:
+            prod_col_ref = ColumnRef(table=new_base, column=prod_cols[0])
+            new_output_type = "string"
+            new_group_by = (prod_col_ref,)
+            new_selected = (prod_col_ref,)
+            new_limit = 1
+            if "lãi gộp" in q_low or "lời nhất" in q_low:
+                profit_cols = [c for c in base_cols if any(p in c.lower() for p in ("lãi gộp", "lợi nhuận", "lãi"))]
+                if profit_cols:
+                    p_col_ref = ColumnRef(table=new_base, column=profit_cols[0])
+                    new_aggs = (Aggregation(function="sum", column=p_col_ref, alias="tong_lai"),)
+                    new_sort_list = [Sort(key="tong_lai", direction="desc")]
+            elif "doanh thu" in q_low or "nhiều tiền" in q_low:
+                money_cols = [c for c in base_cols if any(m in c.lower() for m in ("thành tiền", "tổng tiền", "tiền"))]
+                if money_cols:
+                    m_col_ref = ColumnRef(table=new_base, column=money_cols[0])
+                    new_aggs = (Aggregation(function="sum", column=m_col_ref, alias="tong_tien"),)
+                    new_sort_list = [Sort(key="tong_tien", direction="desc")]
+            else:
+                qty_cols = [c for c in base_cols if any(q in c.lower() for q in ("sl bán", "số lượng", "sl", "s.l"))]
+                if qty_cols:
+                    q_col_ref = ColumnRef(table=new_base, column=qty_cols[0])
+                    new_aggs = (Aggregation(function="sum", column=q_col_ref, alias="tong_sl"),)
+                    new_sort_list = [Sort(key="tong_sl", direction="desc")]
+
+    # Supplier query
+    is_supplier_q = any(k in q_low for k in ("ncc nào", "nhà cung cấp nào", "nhập của ncc", "nhập của ai", "nhà cung cấp chính"))
+    if is_supplier_q:
+        import_tables = [t for t in valid_tables if any(s in t.lower() for s in ("nhaphang", "nhap_hang", "so_nhap"))]
+        supp_table = import_tables[0] if import_tables else new_base
+        supp_cols = list(schema.get(supp_table, ()))
+        ncc_cols = [c for c in supp_cols if any(n in c.lower() for n in ("nhà cung cấp", "ncc", "tên ncc", "đối tác"))]
+        if ncc_cols:
+            new_base = supp_table
+            ncc_col_ref = ColumnRef(table=new_base, column=ncc_cols[0])
+            new_output_type = "string"
+            new_group_by = (ncc_col_ref,)
+            new_selected = (ncc_col_ref,)
+            new_limit = 1
+            if "chính" in q_low or "nhiều phiếu" in q_low:
+                new_aggs = (Aggregation(function="count", column=ncc_col_ref, alias="so_phieu"),)
+                new_sort_list = [Sort(key="so_phieu", direction="desc")]
+            else:
+                m_cols = [c for c in supp_cols if any(m in c.lower() for m in ("tổng tiền", "thành tiền", "tiền", "amount"))]
+                if m_cols:
+                    m_col_ref = ColumnRef(table=new_base, column=m_cols[0])
+                    new_aggs = (Aggregation(function="sum", column=m_col_ref, alias="tong_tien"),)
+                    new_sort_list = [Sort(key="tong_tien", direction="desc")]
+
+    new_time_buckets: tuple[TimeBucket, ...] | None = None
+    # Month query
+    is_month_comp_q = any(k in q_low for k in ("tháng nào", "thang nao"))
+    if is_month_comp_q:
+        if date_col:
+            money_cols = [c for c in base_cols if any(m in c.lower() for m in ("thành tiền", "tổng tiền", "tiền", "doanh thu", "amount"))]
+            target_money_col = ColumnRef(table=new_base, column=money_cols[0]) if money_cols else (new_aggs[0].column if new_aggs else None)
+            if target_money_col:
+                new_time_buckets = (TimeBucket(column=date_col, granularity="month", alias="thang"),)
+                new_aggs = (Aggregation(function="sum", column=target_money_col, alias="tong_tien"),)
+                new_sort_list = [Sort(key="tong_tien", direction="desc")]
+                new_limit = 1
+                new_group_by = ()
+                new_selected = ()
+                new_output_type = "date"
+                m_pairs = re.findall(r'(\d{1,2})[/.-](\d{2,4})', q_low)
+                mth_filters = []
+                if m_pairs:
+                    dates_parsed = []
+                    for m_s, y_s in m_pairs:
+                        m_val, y_val = int(m_s), int(y_s)
+                        if y_val < 100: y_val += 2000
+                        if 1 <= m_val <= 12:
+                            dates_parsed.append((y_val, m_val))
+                    if dates_parsed:
+                        dates_parsed.sort()
+                        start_y, start_m = dates_parsed[0]
+                        end_y, end_m = dates_parsed[-1]
+                        last_day = 31 if end_m in (1, 3, 5, 7, 8, 10, 12) else (28 if end_m == 2 else 30)
+                        mth_filters.append(Filter(column=date_col, operator="gte", value=f"{start_y:04d}-{start_m:02d}-01"))
+                        mth_filters.append(Filter(column=date_col, operator="lte", value=f"{end_y:04d}-{end_m:02d}-{last_day:02d}"))
+                new_filters = tuple(f for f in new_filters if not (f.column and f.column.column == date_col.column)) + tuple(mth_filters)
+        else:
+            new_output_type = plan.output_type
+
+    # Count distinct queries (orders, bikes, products)
+    is_count_distinct_q = any(k in q_low for k in ("bn chiếc", "bao nhiêu chiếc", "mấy đơn", "bn đơn", "bao nhiêu đơn", "bnhiu đh", "bao nhiêu đh", "mấy đh", "bao nhiêu mặt hàng"))
+    if is_count_distinct_q:
+        new_output_type = "number"
+        if any(k in q_low for k in ("mấy đơn", "bn đơn", "bao nhiêu đơn", "bnhiu đh", "bao nhiêu đh", "mấy đh")):
+            order_cols = [c for c in base_cols if any(o in c.lower() for o in ("đơn số", "mã đơn", "ma don", "bill", "hđ", "số phiếu", "no.", "mã hóa đơn"))]
+            if order_cols:
+                ord_col_ref = ColumnRef(table=new_base, column=order_cols[0])
+                new_aggs = (Aggregation(function="count_distinct", column=ord_col_ref, alias="so_don"),)
+                new_group_by = ()
+                new_selected = ()
+                new_sort_list = []
+        elif "chiếc" in q_low or "xe" in q_low:
+            plate_cols = [c for c in base_cols if any(p in c.lower() for p in ("biển số", "bien so", "xe"))]
+            if plate_cols:
+                p_col_ref = ColumnRef(table=new_base, column=plate_cols[0])
+                new_aggs = (Aggregation(function="count_distinct", column=p_col_ref, alias="so_xe"),)
+                new_group_by = ()
+                new_selected = ()
+                new_sort_list = []
+
+    if (new_output_type in ("number", "percent", "boolean") or (new_output_type == "date" and not is_month_comp_q)):
         new_sort = ()
     elif is_top and new_aggs:
         new_sort = (Sort(key=new_aggs[0].alias, direction="desc"),)
     else:
         new_sort = tuple(new_sort_list)
-    new_time_buckets = tuple(
-        TimeBucket(column=resolve_col(tb.column), granularity=tb.granularity, alias=tb.alias)
-        for tb in plan.time_buckets
-    )
+    if new_time_buckets is None:
+        new_time_buckets = tuple(
+            TimeBucket(column=resolve_col(tb.column), granularity=tb.granularity, alias=tb.alias)
+            for tb in plan.time_buckets
+        )
     new_time_range = (
         TimeRange(
             column=resolve_col(plan.time_range.column),
@@ -1275,7 +1444,7 @@ def heal_query_plan(
         time_range=new_time_range,
         time_buckets=new_time_buckets,
         business_rules=plan.business_rules,
-        output_type=plan.output_type,
+        output_type=new_output_type,
         evidence_requirements=plan.evidence_requirements,
         metadata=plan.metadata,
     )
