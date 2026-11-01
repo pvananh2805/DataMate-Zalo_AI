@@ -196,6 +196,7 @@ class SubmissionWriter:
             raise SubmissionError(f"question_id bị trùng: {question_id}")
         line = serialize_submission_record(question_id, answer, plan=plan)
         self.stream.write(line + "\n")
+        self.stream.flush()
         self.question_ids.add(question_id)
         self.count += 1
 
@@ -217,3 +218,5 @@ class SubmissionWriter:
             self.stream.close()
         if not self.committed:
             self.temporary.unlink(missing_ok=True)
+
+SubmissionWriter.write = SubmissionWriter.append

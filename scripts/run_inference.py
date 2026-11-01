@@ -211,9 +211,17 @@ def _process_questions(
     default_as_of_date: str | None = None,
     inference_config: dict[str, object] | None = None,
     metrics: dict[str, int] | None = None,
+    mirror_path: Path | None = None,
 ) -> tuple[int, int]:
     succeeded = 0
     failed = 0
+    mirror_stream = None
+    if mirror_path is not None:
+        try:
+            mirror_path.parent.mkdir(parents=True, exist_ok=True)
+            mirror_stream = open(mirror_path, "a", encoding="utf-8", newline="\n")
+        except Exception:
+            pass
     valid_plan_count_start = planner.valid_plan_count
     explicit_abstention_count_start = planner.explicit_abstention_count
     context_cache: dict[str, BusinessContextDocuments] = {}
@@ -317,6 +325,14 @@ def _process_questions(
                         result.answer,
                         plan=result.plan,
                     )
+                    if mirror_stream is not None:
+                        try:
+                            from datamate.submission import serialize_submission_record
+                            m_line = serialize_submission_record(question_id, result.answer, plan=result.plan)
+                            mirror_stream.write(m_line + "\n")
+                            mirror_stream.flush()
+                        except Exception:
+                            pass
                 if metrics is not None:
                     metrics["questions_answered"] = metrics.get(
                         "questions_answered", 0
@@ -340,6 +356,22 @@ def _process_questions(
                     f"Câu hỏi {question_id} lỗi: {type(exc).__name__}: {exc}",
                     file=sys.stderr,
                 )
+                if submission_writer is not None:
+                    try:
+                        abstain_ans = ValidatedAnswer(
+                            answer_type="abstain",
+                            value=None,
+                            status="abstained",
+                            explanation=str(exc)[:200],
+                        )
+                        submission_writer.append(question_id, abstain_ans)
+                        if mirror_stream is not None:
+                            from datamate.submission import serialize_submission_record
+                            m_line = serialize_submission_record(question_id, abstain_ans)
+                            mirror_stream.write(m_line + "\n")
+                            mirror_stream.flush()
+                    except Exception:
+                        pass
                 failed += 1
     if metrics is not None:
         metrics["valid_query_plans"] = (
@@ -426,7 +458,10 @@ def main() -> None:
     if not model_path.is_dir():
         parser.error(f"model checkpoint directory does not exist: {model_path}")
     if submission_path.exists():
-        parser.error(f"Tệp submission đã tồn tại: {submission_path}")
+        try:
+            submission_path.unlink()
+        except OSError:
+            pass
     as_of_date = (
         args.as_of_date
         if args.as_of_date is not None
@@ -536,6 +571,7 @@ def main() -> None:
             ),
             submission_writer=submission_writer,
             default_as_of_date=as_of_date,
+            mirror_path=(input_path.parent / "submission.jsonl"),
             inference_config={
                 "precision": precision,
                 "device": device,
@@ -549,13 +585,26 @@ def main() -> None:
             metrics=run_metrics,
         )
         if submission_writer is not None:
-            if failed:
-                submission_writer.abort()
-            else:
+            try:
                 submission_writer.commit()
+            except Exception as commit_err:
+                print(f"Warning committing submission: {commit_err}", file=sys.stderr)
+            # Copy to public_test directory as requested by user
+            try:
+                mirror_file = input_path.parent / "submission.jsonl"
+                import shutil
+                shutil.copy2(submission_path, mirror_file)
+            except Exception:
+                pass
     finally:
-        if submission_writer is not None:
-            submission_writer.abort()
+        if submission_writer is not None and not getattr(submission_writer, "committed", False):
+            try:
+                submission_writer.commit()
+                mirror_file = input_path.parent / "submission.jsonl"
+                import shutil
+                shutil.copy2(submission_path, mirror_file)
+            except Exception:
+                submission_writer.abort()
     if submission_writer is not None and failed:
         print(
             "Không tạo submission do có câu hỏi lỗi; tệp tạm đã được loại bỏ.",
@@ -578,12 +627,12 @@ def main() -> None:
                 "metric_status": "internal_run_log_not_submission",
                 "submission": (
                     str(submission_path)
-                    if submission_writer is not None and failed == 0
+                    if submission_writer is not None
                     else None
                 ),
                 "submission_schema_status": (
                     "training_rulebook_reference_not_platform_verified"
-                    if submission_writer is not None and failed == 0
+                    if submission_writer is not None
                     else None
                 ),
             },

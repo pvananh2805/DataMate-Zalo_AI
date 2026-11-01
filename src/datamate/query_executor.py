@@ -1,6 +1,7 @@
 """Bounded deterministic query execution over streamed, typed table rows."""
 
 from __future__ import annotations
+import re
 
 from collections import defaultdict
 from collections.abc import Callable
@@ -97,6 +98,25 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
         if not isinstance(value, str) or not isinstance(expected, str):
             raise QueryExecutionError("contains requires text on both sides")
         return expected.casefold() in value.casefold()
+    if isinstance(value, (datetime, date)) and isinstance(expected, str):
+        v_date = value.date() if isinstance(value, datetime) else value
+        try:
+            exp_date = date.fromisoformat(expected[:10])
+            if op == "between":
+                low, high = expected
+                low_d = date.fromisoformat(low[:10]) if isinstance(low, str) else low
+                high_d = date.fromisoformat(high[:10]) if isinstance(high, str) else high
+                return low_d <= v_date <= high_d
+            if op == "lt":
+                return v_date < exp_date
+            if op == "lte":
+                return v_date <= exp_date
+            if op == "gt":
+                return v_date > exp_date
+            if op == "gte":
+                return v_date >= exp_date
+        except ValueError:
+            pass
     try:
         if op == "between":
             low, high = expected
@@ -224,15 +244,30 @@ def _next_bucket_start(day: date, granularity: str) -> date:
 
 
 def _to_decimal(value: object, *, alias: str) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+    if isinstance(value, bool):
         raise QueryExecutionError(f"Aggregation {alias!r} requires numeric values")
-    try:
-        number = Decimal(str(value))
-    except InvalidOperation as exc:
-        raise QueryExecutionError(f"Invalid numeric value for {alias!r}") from exc
-    if not number.is_finite():
-        raise QueryExecutionError(f"Non-finite numeric value for {alias!r}")
-    return number
+    if isinstance(value, (int, float, Decimal)):
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise QueryExecutionError(f"Invalid numeric value for {alias!r}") from exc
+        if not number.is_finite():
+            raise QueryExecutionError(f"Non-finite numeric value for {alias!r}")
+        return number
+    if isinstance(value, str):
+        v = value.strip()
+        # Handle values with embedded unit strings (e.g. '1 ly', '2 cái', '1 phần')
+        m = re.match(r"^([+-]?[\d.,]+)\s+([a-zA-ZÀ-ỹ]+)$", v)
+        if m:
+            num_str = m.group(1).replace(",", "")
+            try:
+                number = Decimal(num_str)
+                if not number.is_finite():
+                    raise QueryExecutionError(f"Non-finite numeric value for {alias!r}")
+                return number
+            except InvalidOperation:
+                pass
+    raise QueryExecutionError(f"Aggregation {alias!r} requires numeric values")
 
 
 def _addition_precision(left: Decimal, right: Decimal) -> int:

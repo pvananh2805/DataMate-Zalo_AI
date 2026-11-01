@@ -8,11 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements-inference.txt ./
+COPY requirements.txt requirements-inference.txt ./
 RUN python -m pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu \
         "torch==2.5.1" \
-    && python -m pip install --no-cache-dir -r requirements-inference.txt
+    && python -m pip install --no-cache-dir -r requirements.txt -r requirements-inference.txt
 
 COPY src/ ./src/
 COPY scripts/run_inference.py ./scripts/run_inference.py

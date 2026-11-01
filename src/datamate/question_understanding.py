@@ -8,10 +8,22 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Protocol
 
 from .plan_serialization import QueryPlanFormatError, query_plan_from_json
-from .query_plan import PlanValidationError, QueryPlan, validate_query_plan
+from .query_plan import (
+    Aggregation,
+    ColumnRef,
+    Filter,
+    Join,
+    PlanValidationError,
+    QueryPlan,
+    Sort,
+    TimeBucket,
+    TimeRange,
+    validate_query_plan,
+)
 
 
 class QuestionUnderstandingError(RuntimeError):
@@ -630,6 +642,155 @@ def build_planning_prompt(
     return prompt
 
 
+
+def _norm(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    return re.sub(
+        r"[^a-z0-9]",
+        "",
+        unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode(),
+    )
+
+
+def heal_query_plan(
+    plan: QueryPlan,
+    schema: Mapping[str, Sequence[str]],
+    question: str,
+    as_of_date: str | None = None,
+) -> QueryPlan:
+    if not schema or not plan.base_table:
+        return plan
+    valid_tables = list(schema.keys())
+
+    def resolve_table(req_table: str | None) -> str:
+        if not req_table:
+            return valid_tables[0]
+        if req_table in valid_tables:
+            return req_table
+        candidates = [
+            t for t in valid_tables
+            if req_table.lower() in t.lower()
+            or t.lower().endswith("::" + req_table.lower())
+            or Path(t.split("::")[0]).stem.lower() == req_table.lower()
+        ]
+        if not candidates:
+            req_norm = _norm(req_table)
+            candidates = [t for t in valid_tables if req_norm in _norm(t)]
+        if not candidates:
+            return req_table
+        if len(candidates) == 1:
+            return candidates[0]
+        q_tokens = [tok for tok in re.findall(r"[a-zA-Z0-9]+", question.lower()) if len(tok) >= 2]
+        def match_score(t: str) -> int:
+            t_low = t.lower()
+            return sum(1 for tok in q_tokens if tok in t_low)
+        return max(candidates, key=match_score)
+
+    new_base = resolve_table(plan.base_table)
+    table_map: dict[str, str] = {plan.base_table: new_base}
+    for j in plan.joins:
+        if j.left.table:
+            table_map[j.left.table] = resolve_table(j.left.table)
+        if j.right.table:
+            table_map[j.right.table] = resolve_table(j.right.table)
+
+    def resolve_col(ref: ColumnRef | None) -> ColumnRef | None:
+        if ref is None:
+            return None
+        target_table = table_map.get(ref.table, resolve_table(ref.table))
+        valid_cols = list(schema.get(target_table, ()))
+        if not valid_cols or ref.column in valid_cols:
+            return ColumnRef(table=target_table, column=ref.column)
+        c_norm = _norm(ref.column)
+        for vc in valid_cols:
+            if c_norm == _norm(vc):
+                return ColumnRef(table=target_table, column=vc)
+        matches = [vc for vc in valid_cols if c_norm in _norm(vc) or _norm(vc) in c_norm]
+        if matches:
+            return ColumnRef(table=target_table, column=matches[0])
+        return ColumnRef(table=target_table, column=ref.column)
+
+    new_joins = tuple(
+        Join(left=resolve_col(j.left), right=resolve_col(j.right), kind=j.kind)
+        for j in plan.joins
+    )
+    new_filters = tuple(
+        Filter(column=resolve_col(f.column), operator=f.operator, value=f.value)
+        for f in plan.filters
+    )
+    new_group_by = tuple(resolve_col(g) for g in plan.group_by)
+    new_aggs = tuple(
+        Aggregation(
+            function=a.function,
+            column=resolve_col(a.column),
+            alias=a.alias,
+            filters=tuple(
+                Filter(column=resolve_col(f.column), operator=f.operator, value=f.value)
+                for f in a.filters
+            ),
+            time_range=a.time_range,
+            unit_conversion=a.unit_conversion,
+        )
+        for a in plan.aggregations
+    )
+    agg_cols = {a.column.column: a.alias for a in new_aggs if a.column}
+    new_selected = tuple(resolve_col(c) for c in plan.selected_columns)
+    if new_group_by or new_aggs:
+        grp_col_names = {g.column for g in new_group_by}
+        new_selected = tuple(c for c in new_selected if c.column in grp_col_names)
+    elif not new_selected and not new_group_by and not new_aggs:
+        valid_cols = list(schema.get(new_base, ()))
+        if valid_cols:
+            new_selected = (ColumnRef(table=new_base, column=valid_cols[0]),)
+
+    new_sort_list = []
+    for s in plan.sort:
+        resolved_key = resolve_col(s.key) if isinstance(s.key, ColumnRef) else s.key
+        if isinstance(resolved_key, ColumnRef) and resolved_key.column in agg_cols:
+            new_sort_list.append(Sort(key=agg_cols[resolved_key.column], direction=s.direction))
+        elif isinstance(resolved_key, str) and resolved_key in agg_cols:
+            new_sort_list.append(Sort(key=agg_cols[resolved_key], direction=s.direction))
+        else:
+            new_sort_list.append(Sort(key=resolved_key, direction=s.direction))
+    new_sort = tuple(new_sort_list)
+    new_time_buckets = tuple(
+        TimeBucket(column=resolve_col(tb.column), granularity=tb.granularity, alias=tb.alias)
+        for tb in plan.time_buckets
+    )
+    new_time_range = (
+        TimeRange(
+            column=resolve_col(plan.time_range.column),
+            start=plan.time_range.start,
+            end=plan.time_range.end,
+            inclusive_end=plan.time_range.inclusive_end,
+        )
+        if plan.time_range
+        else None
+    )
+
+    return QueryPlan(
+        base_table=new_base,
+        joins=new_joins,
+        selected_columns=new_selected,
+        filters=new_filters,
+        group_by=new_group_by,
+        group_filters=plan.group_filters,
+        group_exclusions=plan.group_exclusions,
+        aggregations=new_aggs,
+        calculations=plan.calculations,
+        count_groups=plan.count_groups,
+        sort=new_sort,
+        limit=plan.limit,
+        time_range=new_time_range,
+        time_buckets=new_time_buckets,
+        business_rules=plan.business_rules,
+        output_type=plan.output_type,
+        evidence_requirements=plan.evidence_requirements,
+        metadata=plan.metadata,
+    )
+
+
 class JsonPlanAdapter:
     """Decode and validate plans generated by an injected local text backend."""
 
@@ -678,11 +839,25 @@ class JsonPlanAdapter:
                 )
             try:
                 plan = query_plan_from_json(raw)
-                if plan.output_type in {"unanswerable", "abstain"}:
+                is_abstain = (
+                    plan.output_type in {"unanswerable", "abstain"}
+                    or plan.metadata.get("status") in {"abstained", "unanswerable", "ambiguous", "insufficient_data"}
+                )
+                if is_abstain:
+                    p_out = plan.output_type if plan.output_type in {"unanswerable", "abstain"} else ("abstain" if plan.metadata.get("status") == "abstained" else "unanswerable")
+                    plan = QueryPlan(
+                        base_table=plan.base_table if plan.base_table in context.schema else None,
+                        output_type=p_out,
+                        metadata={
+                            "status": plan.metadata.get("status"),
+                            "reason": plan.metadata.get("reason"),
+                        }
+                    )
                     validate_abstention_plan(plan, context.schema)
                     self.valid_plan_count += 1
                     self.explicit_abstention_count += 1
                     return plan
+                plan = heal_query_plan(plan, context.schema, question, context.as_of_date)
                 validate_query_plan(
                     plan,
                     {table: set(columns) for table, columns in context.schema.items()},

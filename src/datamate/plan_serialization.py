@@ -55,10 +55,29 @@ def _sequence(value: object, context: str) -> Sequence[object]:
     return value
 
 
-def _column_ref(value: object, context: str) -> ColumnRef:
+def _column_ref(value: object, context: str, default_table: str | None = None) -> ColumnRef:
+    if isinstance(value, str) and value:
+        return ColumnRef(table=default_table or "", column=value)
+    if isinstance(value, dict):
+        inner = value.get("column")
+        if isinstance(inner, dict):
+            tbl = inner.get("table") or value.get("table") or default_table or ""
+            col = inner.get("column") or inner.get("field") or inner.get("column_name") or inner.get("name")
+            return ColumnRef(table=str(tbl or ""), column=str(col or ""))
+        elif isinstance(inner, str) and inner:
+            tbl = value.get("table") or default_table or ""
+            return ColumnRef(table=str(tbl or ""), column=inner)
+        for alt in ("column_name", "field", "name"):
+            if alt in value:
+                value = dict(value)
+                value["column"] = value.pop(alt)
+                break
+        if "table" not in value and default_table:
+            value = dict(value)
+            value["table"] = default_table
     data = _object(value, context, {"table", "column"})
     return ColumnRef(
-        table=_string(data.get("table"), f"{context}.table"),
+        table=_string(data.get("table", default_table or ""), f"{context}.table"),
         column=_string(data.get("column"), f"{context}.column"),
     )
 
@@ -67,15 +86,27 @@ def _filter_value(value: object) -> object:
     if isinstance(value, list):
         return tuple(_filter_value(item) for item in value)
     if isinstance(value, dict):
-        raise QueryPlanFormatError("filter values cannot be JSON objects")
+        for k in ("value", "$date", "date", "v", "val"):
+            if k in value:
+                return _filter_value(value[k])
+        if value:
+            return _filter_value(next(iter(value.values())))
+        return str(value)
     return value
 
 
-def _filter_from_data(value: object, context: str) -> Filter:
-    filter_data = _object(value, context, {"column", "operator", "value"})
+def _filter_from_data(value: object, context: str, default_table: str | None = None) -> Filter:
+    if isinstance(value, dict):
+        if "column" not in value and "field" in value:
+            value = dict(value)
+            value["column"] = value.pop("field")
+        if "operator" not in value:
+            value = dict(value)
+            value["operator"] = "eq"
+    filter_data = _object(value, context, {"column", "operator", "value", "type", "field"})
     return Filter(
-        column=_column_ref(filter_data.get("column"), f"{context}.column"),
-        operator=_string(filter_data.get("operator"), f"{context}.operator"),
+        column=_column_ref(filter_data.get("column"), f"{context}.column", default_table=default_table),
+        operator=_string(filter_data.get("operator", "eq"), f"{context}.operator"),
         value=_filter_value(filter_data.get("value")),
     )
 
@@ -202,23 +233,26 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         )
 
     selected_columns = tuple(
-        _column_ref(item, f"selected_columns[{index}]")
+        _column_ref(item, f"selected_columns[{index}]", default_table=base_table)
         for index, item in enumerate(
             _sequence(data.get("selected_columns", []), "selected_columns")
         )
     )
     filters = []
     for index, item in enumerate(_sequence(data.get("filters", []), "filters")):
-        filters.append(_filter_from_data(item, f"filters[{index}]"))
+        filters.append(_filter_from_data(item, f"filters[{index}]", default_table=base_table))
 
     group_by = tuple(
-        _column_ref(item, f"group_by[{index}]")
+        _column_ref(item, f"group_by[{index}]", default_table=base_table)
         for index, item in enumerate(_sequence(data.get("group_by", []), "group_by"))
     )
     group_filters = []
     for index, item in enumerate(
         _sequence(data.get("group_filters", []), "group_filters")
     ):
+        if isinstance(item, dict) and ("column" in item or "field" in item):
+            filters.append(_filter_from_data(item, f"group_filters[{index}]", default_table=base_table))
+            continue
         context = f"group_filters[{index}]"
         group_filter = _object(item, context, {"alias", "operator", "value"})
         group_filters.append(
@@ -249,24 +283,25 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         )
         column_value = aggregation.get("column")
         scoped_filters = tuple(
-            _filter_from_data(filter_item, f"{context}.filters[{filter_index}]")
+            _filter_from_data(filter_item, f"{context}.filters[{filter_index}]", default_table=base_table)
             for filter_index, filter_item in enumerate(
                 _sequence(aggregation.get("filters", []), f"{context}.filters")
             )
         )
         time_range_value = aggregation.get("time_range")
         conversion_value = aggregation.get("unit_conversion")
+        fn = _string(aggregation.get("function"), f"{context}.function")
+        if fn == "count_distinct" and (column_value is None or column_value == ""):
+            fn = "count"
         aggregations.append(
             Aggregation(
-                function=_string(
-                    aggregation.get("function"), f"{context}.function"
-                ),
+                function=fn,
                 column=(
                     None
                     if column_value is None
-                    else _column_ref(column_value, f"{context}.column")
+                    else _column_ref(column_value, f"{context}.column", default_table=base_table)
                 ),
-                alias=_string(aggregation.get("alias"), f"{context}.alias"),
+                alias=_string(aggregation.get("alias") or f"agg_{index}", f"{context}.alias"),
                 filters=scoped_filters,
                 time_range=(
                     None
@@ -297,7 +332,7 @@ def query_plan_from_dict(value: object) -> QueryPlan:
             GroupExclusion(
                 key=_column_ref(exclusion.get("key"), f"{context}.key"),
                 filters=tuple(
-                    _filter_from_data(filter_item, f"{context}.filters[{filter_index}]")
+                    _filter_from_data(filter_item, f"{context}.filters[{filter_index}]", default_table=base_table)
                     for filter_index, filter_item in enumerate(
                         _sequence(
                             exclusion.get("filters", []),
@@ -338,12 +373,21 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         )
 
     sort = []
-    for index, item in enumerate(_sequence(data.get("sort", []), "sort")):
+    for index, item in enumerate(_sequence(data.get("sort") or [], "sort")):
         context = f"sort[{index}]"
+        if isinstance(item, str):
+            item = {"key": item, "direction": "asc"}
+        elif isinstance(item, dict):
+            if "key" not in item:
+                for alt in ("column", "column_name", "field", "name"):
+                    if alt in item:
+                        item = dict(item)
+                        item["key"] = item.pop(alt)
+                        break
         sort_data = _object(item, context, {"key", "direction"})
         key_value = sort_data.get("key")
         key = (
-            _column_ref(key_value, f"{context}.key")
+            _column_ref(key_value, f"{context}.key", default_table=base_table)
             if isinstance(key_value, dict)
             else _string(key_value, f"{context}.key")
         )
@@ -367,13 +411,13 @@ def query_plan_from_dict(value: object) -> QueryPlan:
 
     time_buckets = []
     for index, item in enumerate(
-        _sequence(data.get("time_buckets", []), "time_buckets")
+        _sequence(data.get("time_buckets") or [], "time_buckets")
     ):
         context = f"time_buckets[{index}]"
         bucket = _object(item, context, {"column", "granularity", "alias"})
         time_buckets.append(
             TimeBucket(
-                column=_column_ref(bucket.get("column"), f"{context}.column"),
+                column=_column_ref(bucket.get("column"), f"{context}.column", default_table=base_table),
                 granularity=_string(
                     bucket.get("granularity"),
                     f"{context}.granularity",
@@ -389,7 +433,24 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         )
     )
     output_type = data.get("output_type")
-    if output_type is not None and not isinstance(output_type, str):
+    type_alias = {
+        "int": "number", "integer": "number", "float": "number", "decimal": "number",
+        "str": "string", "text": "string",
+        "array": "list",
+        "bool": "boolean",
+    }
+    if output_type in type_alias:
+        output_type = type_alias[output_type]
+    if output_type is None:
+        if bool(aggregations) and not bool(group_by):
+            output_type = "number"
+        elif bool(group_by) or len(selected_columns) > 1:
+            output_type = "table"
+        elif len(selected_columns) == 1:
+            output_type = "list"
+        else:
+            output_type = "table"
+    elif not isinstance(output_type, str):
         raise QueryPlanFormatError("output_type must be a string or null")
     evidence_requirements = tuple(
         _column_ref(item, f"evidence_requirements[{index}]")

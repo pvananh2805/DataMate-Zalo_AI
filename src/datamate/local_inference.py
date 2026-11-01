@@ -431,7 +431,7 @@ class LocalTransformersBackend:
                     f"{self.max_prompt_tokens}"
                 )
             inputs = {
-                key: value.to(torch.device("cuda:0"))
+                key: value.to(torch.device("cuda:0" if self.device == "cuda" else "cpu"))
                 for key, value in encoded.items()
                 if key in {"input_ids", "attention_mask"}
             }
