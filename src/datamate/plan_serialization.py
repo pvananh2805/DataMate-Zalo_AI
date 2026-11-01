@@ -67,6 +67,7 @@ def _column_ref(value: object, context: str, default_table: str | None = None) -
         elif isinstance(inner, str) and inner:
             tbl = value.get("table") or default_table or ""
             return ColumnRef(table=str(tbl or ""), column=inner)
+        value = {k: v for k, v in value.items() if k != "alias"}
         for alt in ("column_name", "field", "name"):
             if alt in value:
                 value = dict(value)
@@ -267,6 +268,9 @@ def query_plan_from_dict(value: object) -> QueryPlan:
         if isinstance(item, dict) and ("column" in item or "field" in item):
             filters.append(_filter_from_data(item, f"group_filters[{index}]", default_table=base_table))
             continue
+        if isinstance(item, dict) and "key" in item and "alias" not in item:
+            item = dict(item)
+            item["alias"] = item.pop("key")
         context = f"group_filters[{index}]"
         group_filter = _object(item, context, {"alias", "operator", "value"})
         group_filters.append(

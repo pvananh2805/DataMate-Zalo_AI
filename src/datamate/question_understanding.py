@@ -7,7 +7,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -15,6 +15,7 @@ from .plan_serialization import QueryPlanFormatError, query_plan_from_json
 from .query_executor import _parse_flexible_date
 from .query_plan import (
     Aggregation,
+    Calculation,
     ColumnRef,
     Filter,
     Join,
@@ -665,11 +666,53 @@ def heal_query_plan(
     question: str,
     as_of_date: str | None = None,
 ) -> QueryPlan:
-    if not schema or not plan.base_table or plan.output_type in ('abstain', 'unanswerable') or plan.metadata.get('status') in ('abstained', 'unanswerable', 'ambiguous', 'insufficient_data'):
+    if not schema:
+        return plan
+    if not plan.base_table:
+        # Find best table from schema
+        sales_candidates = [t for t in schema if any(s in t.lower() for s in ("chitiethoadon", "hoadon", "banhang", "sales"))]
+        fallback_base = sales_candidates[0] if sales_candidates else list(schema.keys())[0]
+        plan = QueryPlan(
+            base_table=fallback_base,
+            joins=plan.joins,
+            selected_columns=plan.selected_columns,
+            filters=plan.filters,
+            group_by=plan.group_by,
+            group_filters=plan.group_filters,
+            group_exclusions=plan.group_exclusions,
+            aggregations=plan.aggregations,
+            calculations=plan.calculations,
+            count_groups=plan.count_groups,
+            sort=plan.sort,
+            limit=plan.limit,
+            time_range=plan.time_range,
+            time_buckets=plan.time_buckets,
+            business_rules=plan.business_rules,
+            output_type=plan.output_type or "list",
+            evidence_requirements=plan.evidence_requirements,
+            metadata={"status": "answerable", "reason": "auto-healed base_table"},
+        )
+    elif plan.output_type in ('abstain', 'unanswerable') or plan.metadata.get('status') in ('abstained', 'unanswerable', 'ambiguous', 'insufficient_data'):
         return plan
     valid_tables = list(schema.keys())
 
     def _extract_target_mth_yr() -> tuple[int | None, int | None]:
+        q_low = question.lower()
+        m = re.search(r'(?:tháng|t)\s*(\d{1,2})(?:[\s/._-]+năm[\s/._-]+|[\s/._-]+)(\d{4})', q_low)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        m = re.search(r'\b(?:tháng|t)\s*(\d{1,2})\b', q_low)
+        if m:
+            mth = int(m.group(1))
+            yr = int(as_of_date[:4]) if as_of_date else 2025
+            return mth, yr
+        m = re.search(r'\b(\d{1,2})[/.-](\d{1,2})\b', q_low)
+        if m:
+            n1, n2 = int(m.group(1)), int(m.group(2))
+            if 1 <= n1 <= 12 and n2 > 12:
+                return n1, int(as_of_date[:4]) if as_of_date else 2026
+            elif 1 <= n2 <= 12 and n1 > 12:
+                return n2, int(as_of_date[:4]) if as_of_date else 2026
         for f in plan.filters:
             val = str(f.value)
             m = re.match(r"^(\d{4})-(\d{2})", val)
@@ -678,16 +721,6 @@ def heal_query_plan(
             m = re.match(r"^\d{1,2}[/-](\d{1,2})[/-](\d{4})", val)
             if m:
                 return int(m.group(1)), int(m.group(2))
-        q_low = question.lower()
-        m = re.search(r'(?:tháng|t)\s*(\d{1,2})(?:[\s/._-]+năm[\s/._-]+|[\s/._-]+)(\d{4})', q_low)
-        if m:
-            return int(m.group(1)), int(m.group(2))
-        m = re.search(r'\b(\d{1,2})[/.-](\d{2,4})\b', q_low)
-        if m:
-            mth, yr = int(m.group(1)), int(m.group(2))
-            if yr < 100: yr += 2000
-            if 1 <= mth <= 12 and 2000 <= yr <= 2030:
-                return mth, yr
         if as_of_date:
             try:
                 d = date.fromisoformat(as_of_date[:10])
@@ -703,10 +736,21 @@ def heal_query_plan(
             return valid_tables[0]
         cleaned = req_table.replace(chr(92), "/").split("/")[-1].strip()
         cleaned_colon = cleaned.replace("::", ":")
-        if cleaned in valid_tables:
-            return cleaned
-        if cleaned_colon in valid_tables:
-            return cleaned_colon
+        mth_in_cleaned = None
+        m_mth = re.search(r'(?:^|[\W_])[tT](\d{1,2})[-_]|thang[-_]?(\d{1,2})', cleaned)
+        if m_mth:
+            mth_in_cleaned = int(m_mth.group(1) or m_mth.group(2))
+
+        yr_in_cleaned = None
+        m_yr = re.search(r'(?:^|[\W_])(202\d)(?:$|[\W_])', cleaned)
+        if m_yr:
+            yr_in_cleaned = int(m_yr.group(1))
+
+        if (cleaned in valid_tables or cleaned_colon in valid_tables):
+            mth_conflict = bool(target_mth and mth_in_cleaned and mth_in_cleaned != target_mth)
+            yr_conflict = bool(target_yr and yr_in_cleaned and yr_in_cleaned != target_yr)
+            if not mth_conflict and not yr_conflict:
+                return cleaned if cleaned in valid_tables else cleaned_colon
         if target_mth and target_yr:
             patterns = [
                 f't{target_mth}_{target_yr}',
@@ -728,7 +772,7 @@ def heal_query_plan(
                 return monthly_matches[0]
 
         if target_yr and str(target_yr) not in cleaned:
-            yr_match = re.search(r'\b(202\d)\b', cleaned)
+            yr_match = re.search(r'(?:^|[\W_])(202\d)(?:$|[\W_])', cleaned)
             if yr_match:
                 cleaned_swapped = cleaned.replace(yr_match.group(1), str(target_yr))
                 candidates_yr = [t for t in valid_tables if cleaned_swapped.lower() in t.lower()]
@@ -739,10 +783,14 @@ def heal_query_plan(
         candidates = [
             t for t in valid_tables
             if cleaned.lower() in t.lower()
+            or t.lower() in cleaned.lower()
             or cleaned_colon.lower() in t.lower()
+            or t.lower() in cleaned_colon.lower()
             or t.lower().endswith(":" + cleaned.lower())
             or t.lower().endswith("::" + cleaned.lower())
             or Path(t.replace("::", ":").split(":")[0]).stem.lower() == cleaned_colon.split(":")[0].lower()
+            or t.replace("::", ":").split(":")[0].lower() in cleaned.lower()
+            or cleaned.split(".")[0].lower() in t.lower()
         ]
         if not candidates:
             req_norm = _norm(cleaned)
@@ -780,7 +828,11 @@ def heal_query_plan(
             return score
         return max(candidates, key=match_score)
     new_base = resolve_table(plan.base_table)
-    table_map: dict[str, str] = {plan.base_table: new_base}
+    table_map: dict[str, str] = {
+        plan.base_table: new_base,
+        plan.base_table.replace("::", ":"): new_base,
+        plan.base_table.replace(":", "::"): new_base,
+    }
     for j in plan.joins:
         if j.left.table:
             table_map[j.left.table] = resolve_table(j.left.table)
@@ -854,16 +906,64 @@ def heal_query_plan(
                         return ColumnRef(table=col_ref.table, column=tc)
         return col_ref
 
-    new_joins = tuple(
+    q_low = question.lower()
+    base_cols = list(schema.get(new_base, ()))
+    date_cols = [c for c in base_cols if any(d in c.lower() for d in ("ngày", "thời gian", "date", "time"))]
+    date_col = ColumnRef(table=new_base, column=date_cols[0]) if date_cols else None
+
+    new_joins_list = [
         Join(left=resolve_col(j.left), right=resolve_col(j.right), kind=j.kind)
         for j in plan.joins
-    )
+    ]
+
     temporal_phrases = {"tuần rồi", "tuần này", "hôm nay", "tháng này", "tháng trước", "hôm qua"}
     filtered_filters = []
+
+    has_week_in_q = any(w in q_low for w in ("tuần rồi", "tuần trước", "tuần này"))
+    if has_week_in_q and as_of_date and date_col:
+        is_prev = "tuần rồi" in q_low or "tuần trước" in q_low
+        try:
+            d_as_of = date.fromisoformat(as_of_date[:10])
+            monday = d_as_of - timedelta(days=d_as_of.weekday())
+            if is_prev:
+                w_start = (monday - timedelta(days=7)).isoformat()
+                w_end = (monday - timedelta(days=1)).isoformat()
+            else:
+                w_start = monday.isoformat()
+                w_end = d_as_of.isoformat()
+            filtered_filters.append(Filter(column=date_col, operator="gte", value=w_start))
+            filtered_filters.append(Filter(column=date_col, operator="lte", value=w_end))
+        except ValueError:
+            pass
+
+    has_today = "hôm nay" in q_low or "hom nay" in q_low
+    if has_today and as_of_date and date_col:
+        filtered_filters.append(Filter(column=date_col, operator="eq", value=as_of_date))
+
+    m_day = re.search(r'\b(\d{1,2})[/.-](\d{1,2})\b', q_low)
+    if m_day and not has_week_in_q and date_col:
+        n1, n2 = int(m_day.group(1)), int(m_day.group(2))
+        yr_val = target_yr or (int(as_of_date[:4]) if as_of_date else 2026)
+        if 1 <= n1 <= 12 and n2 > 12:
+            d_iso = f"{yr_val:04d}-{n1:02d}-{n2:02d}"
+            filtered_filters.append(Filter(column=date_col, operator="eq", value=d_iso))
+        elif 1 <= n2 <= 12 and n1 > 12:
+            d_iso = f"{yr_val:04d}-{n2:02d}-{n1:02d}"
+            filtered_filters.append(Filter(column=date_col, operator="eq", value=d_iso))
+
     for f in plan.filters:
         val_str = str(f.value).strip().lower()
         if val_str in temporal_phrases:
             continue
+        if (has_week_in_q or m_day or has_today) and f.column and any(d in f.column.column.lower() for d in ("ngày", "thời gian", "date", "time")):
+            continue
+        if target_mth and as_of_date and str(f.value) == as_of_date and not has_today:
+            continue
+        if target_mth and f.column and any(d in f.column.column.lower() for d in ("ngày", "thời gian", "date", "time")):
+            mth_in_base = re.search(r'\b[tT](\d{1,2})[-_]|thang[-_]?(\d{1,2})', new_base)
+            if mth_in_base and int(mth_in_base.group(1) or mth_in_base.group(2)) == target_mth:
+                if f.operator in ("contains", "eq") and any(str(target_mth) in val_str for target_mth in (f"{target_mth:02d}", f"{target_mth}")):
+                    continue
         res_col = resolve_filter_col(f.column, f.value)
         if res_col is None:
             continue
@@ -871,14 +971,72 @@ def heal_query_plan(
         if res_col.column not in v_cols:
             d_val = _parse_flexible_date(f.value)
             if d_val is not None:
-                date_cols = [c for c in v_cols if any(d in c.lower() for d in ("ngày", "thời gian", "date", "time"))]
-                if date_cols:
-                    res_col = ColumnRef(table=res_col.table, column=date_cols[0])
+                d_cols = [c for c in v_cols if any(d in c.lower() for d in ("ngày", "thời gian", "date", "time"))]
+                if d_cols:
+                    res_col = ColumnRef(table=res_col.table, column=d_cols[0])
             if res_col.column not in v_cols:
                 continue
-        filtered_filters.append(Filter(column=res_col, operator=f.operator, value=f.value))
+        op = f.operator
+        if val_str in ("trà", "tra") and op == "eq":
+            op = "contains"
+        if any(st in res_col.column.lower() for st in ("trạng thái", "tiến độ", "status")):
+            if val_str in ("đã giao", "hoàn thành", "da giao", "thành công", "xong", "đã thanh toán", "thanh toán", "đã xong"):
+                continue
+        filtered_filters.append(Filter(column=res_col, operator=op, value=f.value))
+
+    m_nhom = re.search(r'nhóm\s+([\w\s]+?)(?:\s+tháng|\s+bán|\s+năm|\s+trong|$)', q_low)
+    if m_nhom:
+        cat_name = m_nhom.group(1).strip()
+        base_cols_low = [c.lower() for c in base_cols]
+        if "nhóm" not in base_cols_low:
+            for t_other, other_cols in schema.items():
+                if t_other == new_base: continue
+                other_cols_low = [oc.lower() for oc in other_cols]
+                if "nhóm" in other_cols_low:
+                    shared_cols = [c for c in base_cols if any(c.lower() == oc.lower() for oc in other_cols)]
+                    if shared_cols:
+                        prod_pats = ("tên hàng", "hàng hóa", "hàng bán", "tên sản phẩm", "mặt hàng", "mã hàng", "mã sản phẩm", "mã", "product")
+                        shared_cols.sort(key=lambda c: 0 if any(p in c.lower() for p in prod_pats) else 1)
+                        key_col = shared_cols[0]
+                        other_key_col = next(oc for oc in other_cols if oc.lower() == key_col.lower())
+                        nhom_col = next(oc for oc in other_cols if oc.lower() == "nhóm")
+                        if not any(j.right and j.right.table == t_other for j in new_joins_list):
+                            new_joins_list.append(Join(
+                                left=ColumnRef(table=new_base, column=key_col),
+                                right=ColumnRef(table=t_other, column=other_key_col),
+                                kind="inner"
+                            ))
+                            filtered_filters.append(Filter(
+                                column=ColumnRef(table=t_other, column=nhom_col),
+                                operator="contains",
+                                value=cat_name
+                            ))
+                        break
+
+    new_joins = tuple(new_joins_list)
     new_filters = tuple(filtered_filters)
     new_group_by = tuple(resolve_col(g) for g in plan.group_by)
+    new_limit = plan.limit
+    is_top = any(b in q_low for b in ("bán chạy", "nhiều ly nhất", "nhiều nhất", "hot nhất", "top"))
+    if is_top:
+        prod_cols = [
+            c for c in base_cols
+            if any(p in c.lower() for p in ('tên sản phẩm', 'tên hàng', 'hàng bán', 'hàng hóa', 'mặt hàng', 'tên món', 'món ăn'))
+            and not any(bad in c.lower() for bad in ('ngày', 'khách', 'đơn', 'giá', 'số lượng', 'sl', 'tiền', 'mã', 'nhóm'))
+        ]
+        if prod_cols:
+            new_group_by = (ColumnRef(table=new_base, column=prod_cols[0]),)
+        m_lim = re.search(r'\b(\d+)\s*(?:món|hàng|sản phẩm|mặt hàng)\b', q_low)
+        if m_lim:
+            new_limit = int(m_lim.group(1))
+        elif "nhiều ly nhất" in q_low or "nhiều nhất" in q_low:
+            new_limit = 1
+        qty_cols = [bc for bc in base_cols if any(q in bc.lower() for q in ("sl bán", "số lượng sản phẩm", "số lượng", "s.l", "sl (đv cơ bản)", "slg", "sl"))]
+        if qty_cols:
+            qty_col_ref = ColumnRef(table=new_base, column=qty_cols[0])
+            top_aggs = (Aggregation(function="sum", column=qty_col_ref, alias="tong_sl"),)
+        else:
+            top_aggs = None
     if plan.output_type == "number":
         new_group_by = ()
 
@@ -915,13 +1073,23 @@ def heal_query_plan(
                 unit_conversion=a.unit_conversion,
             )
         )
-    new_aggs = tuple(valid_aggs)
-    if plan.output_type == "number" and len(new_aggs) > 1:
-        q_low = question.lower()
-        if any(w in q_low for w in ("tiền", "doanh thu", "chi phí", "giá", "vnd", "đồng", "doanh so", "doanh số")):
-            money_aggs = [a for a in new_aggs if a.column and any(m in a.column.column.lower() for m in ("tiền", "thành tiền", "tổng"))]
-            if money_aggs:
-                new_aggs = (money_aggs[0],)
+    if is_top and top_aggs is not None:
+        new_aggs = top_aggs
+    else:
+        new_aggs = tuple(valid_aggs)
+    q_low = question.lower()
+    if plan.output_type == "number" and any(a.function in ("sum", "avg") for a in plan.aggregations):
+        if any(w in q_low for w in ("bao nhiêu tiền", "nhiêu tiền", "tiền", "doanh thu", "chi phí", "giá", "vnd", "đồng", "doanh so", "doanh số")):
+            money_cols = [bc for bc in base_cols if any(m == bc.lower() or m in bc.lower() for m in ("tt", "amount", "thành tiền", "tổng tiền", "tiền hàng", "doanh thu", "tiền", "tổng cộng", "tiền bán"))]
+            if money_cols:
+                first_fn = plan.aggregations[0].function if plan.aggregations else "sum"
+                new_aggs = (Aggregation(function=first_fn, column=ColumnRef(table=new_base, column=money_cols[0]), alias="tong_tien"),)
+            elif new_aggs:
+                new_aggs = (new_aggs[0],)
+        elif len(new_aggs) > 1:
+            qty_aggs = [a for a in new_aggs if a.column and any(q in a.column.column.lower() for q in ("sl", "số lượng", "đơn"))]
+            if qty_aggs:
+                new_aggs = (qty_aggs[0],)
             else:
                 new_aggs = (new_aggs[0],)
         elif any(w in q_low for w in ("bao nhiêu", "số lượng", "ly", "cây", "lon", "chai", "chiếc", "đơn")):
@@ -933,6 +1101,13 @@ def heal_query_plan(
         else:
             new_aggs = (new_aggs[0],)
     agg_cols = {a.column.column: a.alias for a in new_aggs if a.column}
+    if plan.output_type == "list" and len(new_group_by) > 1:
+        prod_grp = [g for g in new_group_by if any(p in g.column.lower() for p in ("tên hàng", "hàng bán", "tên sản phẩm", "mặt hàng", "hàng", "sản phẩm"))]
+        if prod_grp:
+            new_group_by = (prod_grp[0],)
+        else:
+            new_group_by = (new_group_by[0],)
+
     new_selected = tuple(resolve_col(c) for c in plan.selected_columns)
     if new_group_by or new_aggs:
         grp_col_names = {g.column for g in new_group_by}
@@ -941,6 +1116,23 @@ def heal_query_plan(
         valid_cols = list(schema.get(new_base, ()))
         if valid_cols:
             new_selected = (ColumnRef(table=new_base, column=valid_cols[0]),)
+
+    if plan.output_type == "list":
+        if is_top and new_group_by:
+            new_selected = (new_group_by[0],)
+        item_cols = [c for c in new_selected if any(p in c.column.lower() for p in ("tên hàng", "hàng bán", "tên sản phẩm", "mặt hàng", "hàng", "sản phẩm"))]
+        if item_cols:
+            new_selected = (item_cols[0],)
+        elif new_group_by:
+            new_selected = (new_group_by[0],)
+        elif new_selected:
+            new_selected = (new_selected[0],)
+        else:
+            prod_cols = [c for c in base_cols if "khách" not in c.lower() and any(p in c.lower() for p in ("tên hàng", "hàng bán", "tên sản phẩm", "mặt hàng", "hàng", "sản phẩm"))]
+            if prod_cols:
+                new_selected = (ColumnRef(table=new_base, column=prod_cols[0]),)
+            elif base_cols:
+                new_selected = (ColumnRef(table=new_base, column=base_cols[0]),)
 
     new_sort_list = []
     for s in plan.sort:
@@ -951,7 +1143,27 @@ def heal_query_plan(
             new_sort_list.append(Sort(key=agg_cols[resolved_key], direction=s.direction))
         else:
             new_sort_list.append(Sort(key=resolved_key, direction=s.direction))
-    new_sort = tuple(new_sort_list)
+    new_calculations = plan.calculations
+    if any(tb in q_low for tb in ("trung bình mỗi đơn", "trung bình mổi đơn", "trung bình 1 đơn", "tb mỗi đơn")):
+        order_cols = [c for c in base_cols if any(o in c.lower() for o in ("đơn số", "mã đơn", "ma don", "bill", "hđ", "số phiếu", "no."))]
+        line_money_cols = [c for c in base_cols if any(m in c.lower() for m in ("thành tiền (đ)", "thành tiền", "tt", "amount"))]
+        target_money_col = ColumnRef(table=new_base, column=line_money_cols[0]) if line_money_cols else (new_aggs[0].column if new_aggs else None)
+        if order_cols and target_money_col:
+            order_col_ref = ColumnRef(table=new_base, column=order_cols[0])
+            new_aggs = (
+                Aggregation(function="sum", column=target_money_col, alias="tong_tien"),
+                Aggregation(function="count_distinct", column=order_col_ref, alias="so_don"),
+            )
+            new_calculations = (
+                Calculation(left="tong_tien", right="so_don", function="ratio", alias="tb_don", rounding_places=0),
+            )
+
+    if plan.output_type == "number":
+        new_sort = ()
+    elif is_top and new_aggs:
+        new_sort = (Sort(key=new_aggs[0].alias, direction="desc"),)
+    else:
+        new_sort = tuple(new_sort_list)
     new_time_buckets = tuple(
         TimeBucket(column=resolve_col(tb.column), granularity=tb.granularity, alias=tb.alias)
         for tb in plan.time_buckets
@@ -981,10 +1193,10 @@ def heal_query_plan(
         group_filters=new_group_filters,
         group_exclusions=plan.group_exclusions,
         aggregations=new_aggs,
-        calculations=plan.calculations,
+        calculations=new_calculations,
         count_groups=plan.count_groups,
         sort=new_sort,
-        limit=plan.limit,
+        limit=new_limit,
         time_range=new_time_range,
         time_buckets=new_time_buckets,
         business_rules=plan.business_rules,
@@ -1089,10 +1301,10 @@ class JsonPlanAdapter:
                         group_filters=plan.group_filters,
                         group_exclusions=plan.group_exclusions,
                         aggregations=plan.aggregations,
-                        calculations=plan.calculations,
+                        calculations=new_calculations,
                         count_groups=plan.count_groups,
                         sort=plan.sort,
-                        limit=plan.limit,
+                        limit=new_limit,
                         time_range=plan.time_range,
                         time_buckets=plan.time_buckets,
                         business_rules=plan.business_rules,

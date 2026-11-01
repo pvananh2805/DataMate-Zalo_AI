@@ -67,10 +67,24 @@ def _row_value(
     ref: ColumnRef,
 ) -> object:
     row = context.get(ref.table)
+    tbl_key = ref.table
+    if row is None:
+        alt_table = ref.table.replace("::", ":") if "::" in ref.table else ref.table.replace(":", "::")
+        row = context.get(alt_table)
+        if row is None:
+            # check without directory or extension
+            for k, v in context.items():
+                if k.split(":")[-1] == ref.table.split(":")[-1] or k.split("/")[-1] == ref.table.split("/")[-1]:
+                    row = v
+                    tbl_key = k
+                    break
+        else:
+            tbl_key = alt_table
     if row is None:
         return None
     try:
-        index = column_indexes[ref.table][ref.column]
+        col_map = column_indexes.get(tbl_key) or column_indexes.get(ref.table) or {}
+        index = col_map[ref.column]
     except KeyError as exc:
         raise QueryExecutionError(
             f"Column is unavailable in source schema: {ref.table}.{ref.column}"
@@ -78,7 +92,7 @@ def _row_value(
     return row[index]
 
 
-def _parse_flexible_date(val: object) -> date | None:
+def _parse_flexible_date(val: object, default_year: int | None = None) -> date | None:
     if val is None:
         return None
     if isinstance(val, datetime):
@@ -91,16 +105,36 @@ def _parse_flexible_date(val: object) -> date | None:
         except (ValueError, OverflowError):
             pass
     if isinstance(val, str):
-        text = val.strip()
+        text_val = val.strip()
+        if re.match(r"^\d{5}$", text_val):
+            try:
+                v_int = int(text_val)
+                if 30000 <= v_int <= 65000:
+                    return (datetime(1899, 12, 30) + timedelta(days=v_int)).date()
+            except (ValueError, OverflowError):
+                pass
         try:
-            return date.fromisoformat(text[:10])
+            return date.fromisoformat(text_val[:10])
         except ValueError:
             pass
-        m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$", text)
+        m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$", text_val)
         if m:
             d, mth, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
             try:
                 return date(y, mth, d)
+            except ValueError:
+                pass
+        m = re.search(r"(\d{1,2})\s*thg\s*(\d{1,2})\s*(\d{4})", text_val)
+        if m:
+            try:
+                return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            except ValueError:
+                pass
+        m = re.match(r"^(\d{1,2})[/.-](\d{1,2})$", text_val)
+        if m:
+            try:
+                yr = default_year if default_year is not None else 2026
+                return date(yr, int(m.group(2)), int(m.group(1)))
             except ValueError:
                 pass
     return None
@@ -113,14 +147,27 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
     if value is None:
         return False
 
-    v_date = _parse_flexible_date(value)
+    exp_str = str(expected).strip().lower()
+    if exp_str in ("ca chiều", "ca chieu"):
+        m_t = re.search(r'(\d{1,2}):(\d{2})', str(value))
+        if m_t:
+            hr = int(m_t.group(1))
+            return 14 <= hr <= 21
+    elif exp_str in ("ca sáng", "ca sang"):
+        m_t = re.search(r'(\d{1,2}):(\d{2})', str(value))
+        if m_t:
+            hr = int(m_t.group(1))
+            return 6 <= hr <= 13
+
+    exp_date = _parse_flexible_date(expected)
+    exp_yr = exp_date.year if exp_date else None
+    v_date = _parse_flexible_date(value, default_year=exp_yr)
     if v_date is not None:
         if op == "between" and isinstance(expected, (list, tuple)) and len(expected) == 2:
             low_d = _parse_flexible_date(expected[0])
             high_d = _parse_flexible_date(expected[1])
             if low_d is not None and high_d is not None:
                 return low_d <= v_date <= high_d
-        exp_date = _parse_flexible_date(expected)
         if exp_date is not None:
             if op == "eq":
                 return v_date == exp_date
@@ -137,17 +184,22 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
 
     if op == "eq":
         if isinstance(value, str) and isinstance(expected, str):
-            return value.strip().casefold() == expected.strip().casefold()
+            norm_v = re.sub(r'\s+', ' ', value.strip().casefold())
+            norm_e = re.sub(r'\s+', ' ', expected.strip().casefold())
+            return norm_v == norm_e
         return value == expected
     if op == "ne":
         if isinstance(value, str) and isinstance(expected, str):
-            return value.strip().casefold() != expected.strip().casefold()
+            norm_v = re.sub(r'\s+', ' ', value.strip().casefold())
+            norm_e = re.sub(r'\s+', ' ', expected.strip().casefold())
+            return norm_v != norm_e
         return value != expected
     if op == "in":
         try:
             return value in expected
         except TypeError as exc:
             raise QueryExecutionError("in filter contains unsupported values") from exc
+
     if op == "contains":
         s_val = str(value).strip().casefold()
         s_exp = str(expected).strip().casefold()
@@ -161,9 +213,9 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
             v_iso = v_date.isoformat()
             if s_exp in v_iso or s_exp.replace("/", "-") in v_iso:
                 return True
-            # e.g. '05-2026' or '05/2026'
             v_my = f"{v_date.month:02d}-{v_date.year}"
-            if s_exp in v_my or s_exp.replace("/", "-") in v_my:
+            v_my_rev = f"{v_date.year}-{v_date.month:02d}"
+            if s_exp in v_my or s_exp.replace("/", "-") in v_my or s_exp in v_my_rev:
                 return True
         return False
     try:
@@ -303,6 +355,8 @@ def _to_decimal(value: object, *, alias: str) -> Decimal:
         return number
     if isinstance(value, str):
         v = value.strip()
+        if v.casefold() in ("tổng tiền", "thành tiền", "số lượng", "đơn giá", "amount", "tt", "sl", "tổng phiếu", "tiền hàng", "tiền") or v.casefold() == alias.casefold():
+            return Decimal(0)
         # Vietnamese currency shorthand: '2tr756' -> 2,756,000, '1tr550' -> 1,550,000, '1tr5' -> 1,500,000, '2tr' -> 2,000,000
         m_tr = re.match(r"^([+-]?\d+)\s*tr\s*(\d+)?$", v.lower())
         if m_tr:
@@ -458,7 +512,39 @@ def _aggregate(
     time_buckets = plan.time_buckets
     distinct_value_count = 0
 
+    has_explicit_status_filter = (
+        plan.output_type == "percent"
+        or any(
+            f.column and any(st in f.column.column.lower() for st in ("trạng thái", "tiến độ", "status"))
+            for f in plan.filters
+        )
+        or any(
+            any(f.column and any(st in f.column.column.lower() for st in ("trạng thái", "tiến độ", "status")) for f in a.filters)
+            for a in plan.aggregations
+        )
+    )
+
     for context in rows:
+        if not has_explicit_status_filter:
+            skip_row = False
+            for tbl, r in context.items():
+                if r is None:
+                    continue
+                tbl_cols = column_indexes.get(tbl, {})
+                for c_name, c_idx in tbl_cols.items():
+                    c_low = c_name.lower()
+                    if any(st in c_low for st in ("trạng thái", "tiến độ", "status")):
+                        val = str(r[c_idx]).strip().lower()
+                        if any(good in val for good in ("hoàn thành", "hoàn tất", "thành công", "completed", "success", "đã xong", "xong")):
+                            continue
+                        if any(bad in val for bad in ("hủy", "huỷ", "hoàn hàng", "hoàn trả", "trả hàng", "đã trả", "cancel", "void")):
+                            skip_row = True
+                            break
+                if skip_row:
+                    break
+            if skip_row:
+                continue
+
         matched_aggregations = [
             all(
                 _matches(
@@ -832,10 +918,11 @@ def execute_query_plan(
             start=1,
         ):
             row = tuple(raw_row)
-            if len(row) != len(schemas[plan.base_table]):
-                raise QueryExecutionError(
-                    f"Row width mismatch in {plan.base_table} at row {row_number}"
-                )
+            base_len = len(schemas[plan.base_table])
+            if len(row) < base_len:
+                row = row + (None,) * (base_len - len(row))
+            elif len(row) > base_len:
+                row = row[:base_len]
             context = {plan.base_table: row}
             for key, exclusion_filters in exclusions_by_key.items():
                 if not any(
@@ -918,10 +1005,11 @@ def execute_query_plan(
         row_count = 0
         for row_count, raw_row in enumerate(source_rows(new_table), start=1):
             row = tuple(raw_row)
-            if len(row) != len(schema):
-                raise QueryExecutionError(
-                    f"Row width mismatch in {new_table} at row {row_count}"
-                )
+            target_len = len(schema)
+            if len(row) < target_len:
+                row = row + (None,) * (target_len - len(row))
+            elif len(row) > target_len:
+                row = row[:target_len]
             record_time_coverage(new_table, row)
             key = row[key_index]
             if key is not None:
@@ -953,10 +1041,11 @@ def execute_query_plan(
             start=1,
         ):
             row = tuple(raw_row)
-            if len(row) != len(schemas[plan.base_table]):
-                raise QueryExecutionError(
-                    f"Row width mismatch in {plan.base_table} at row {base_row_count}"
-                )
+            base_len = len(schemas[plan.base_table])
+            if len(row) < base_len:
+                row = row + (None,) * (base_len - len(row))
+            elif len(row) > base_len:
+                row = row[:base_len]
             record_time_coverage(plan.base_table, row)
             if is_excluded(row):
                 continue
@@ -980,17 +1069,60 @@ def execute_query_plan(
                 current = expanded
                 if not current:
                     break
-                if len(current) + joined_row_count > max_result_rows:
+                if len(current) + joined_row_count > max_join_rows:
                     raise QueryExecutionError(
-                        f"Intermediate joined rows exceed configured limit {max_result_rows}"
+                        f"Intermediate joined rows exceed configured limit {max_join_rows}"
                     )
             for context in current:
                 joined_row_count += 1
                 yield context
         source_row_counts[plan.base_table] = base_row_count
 
+    has_explicit_status_filter = any(
+        any(s in f.column.column.lower() for s in ("trạng thái", "status", "tình trạng"))
+        for f in plan.filters if f.column and f.column.column
+    )
+
     def filtered_contexts() -> Iterable[dict[str, Row | None]]:
         for context in contexts():
+            # Skip repeated header rows
+            is_header_row = False
+            for t_name, r_vals in context.items():
+                if not r_vals: continue
+                t_cols = schemas.get(t_name, ())
+                if len(t_cols) >= 2 and all(str(r_vals[i]).strip().lower() == str(t_cols[i]).strip().lower() for i in range(min(3, len(t_cols)))):
+                    is_header_row = True
+                    break
+            if is_header_row:
+                continue
+
+            # Rulebook §1: Bỏ đơn hủy, trả hàng trừ khi câu hỏi hỏi đích danh trạng thái
+            if not has_explicit_status_filter:
+                skip_cancelled = False
+                for t_name, r_vals in context.items():
+                    if not r_vals: continue
+                    t_cols = schemas.get(t_name, ())
+                    for idx, c_name in enumerate(t_cols):
+                        if any(s in c_name.lower() for s in ("trạng thái", "status")):
+                            val_st = str(r_vals[idx]).strip().lower() if r_vals[idx] is not None else ""
+                            if any(h in val_st for h in ("hủy", "huỷ", "hoàn hàng", "trả hàng")):
+                                skip_cancelled = True
+                                break
+                    if skip_cancelled: break
+                if skip_cancelled:
+                    continue
+
+            # Rulebook §1: Phí phục vụ không phải mặt hàng
+            if plan.group_by:
+                is_service_fee = False
+                for g in plan.group_by:
+                    val_g = _row_value(context, column_indexes, g)
+                    if str(val_g).strip().lower() == "phí phục vụ":
+                        is_service_fee = True
+                        break
+                if is_service_fee:
+                    continue
+
             if not all(
                 _matches(_row_value(context, column_indexes, item.column), item)
                 for item in plan.filters
