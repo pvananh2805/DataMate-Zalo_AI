@@ -78,6 +78,28 @@ def _row_value(
     return row[index]
 
 
+def _parse_flexible_date(val: object) -> date | None:
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    if isinstance(val, str):
+        text = val.strip()
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            pass
+        m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$", text)
+        if m:
+            d, mth, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            try:
+                return date(y, mth, d)
+            except ValueError:
+                pass
+    return None
+
 def _matches_value(value: object, op: str, expected: object) -> bool:
     if op == "is_null":
         return value is None
@@ -98,25 +120,26 @@ def _matches_value(value: object, op: str, expected: object) -> bool:
         if not isinstance(value, str) or not isinstance(expected, str):
             raise QueryExecutionError("contains requires text on both sides")
         return expected.casefold() in value.casefold()
-    if isinstance(value, (datetime, date)) and isinstance(expected, str):
-        v_date = value.date() if isinstance(value, datetime) else value
-        try:
-            exp_date = date.fromisoformat(expected[:10])
-            if op == "between":
-                low, high = expected
-                low_d = date.fromisoformat(low[:10]) if isinstance(low, str) else low
-                high_d = date.fromisoformat(high[:10]) if isinstance(high, str) else high
-                return low_d <= v_date <= high_d
-            if op == "lt":
-                return v_date < exp_date
-            if op == "lte":
-                return v_date <= exp_date
-            if op == "gt":
-                return v_date > exp_date
-            if op == "gte":
-                return v_date >= exp_date
-        except ValueError:
-            pass
+    v_date = _parse_flexible_date(value)
+    exp_date = _parse_flexible_date(expected)
+    if v_date is not None and exp_date is not None:
+        if op == "between":
+            low, high = expected
+            low_d = _parse_flexible_date(low) or low
+            high_d = _parse_flexible_date(high) or high
+            return low_d <= v_date <= high_d
+        if op == "lt":
+            return v_date < exp_date
+        if op == "lte":
+            return v_date <= exp_date
+        if op == "gt":
+            return v_date > exp_date
+        if op == "gte":
+            return v_date >= exp_date
+        if op == "eq":
+            return v_date == exp_date
+        if op == "ne":
+            return v_date != exp_date
     try:
         if op == "between":
             low, high = expected
@@ -256,15 +279,22 @@ def _to_decimal(value: object, *, alias: str) -> Decimal:
         return number
     if isinstance(value, str):
         v = value.strip()
-        # Handle values with embedded unit strings (e.g. '1 ly', '2 cái', '1 phần')
-        m = re.match(r"^([+-]?[\d.,]+)\s+([a-zA-ZÀ-ỹ]+)$", v)
-        if m:
-            num_str = m.group(1).replace(",", "")
+        # Check for unit suffix: '1 ly', '2 cái', '42k', '43.000đ'
+        m_unit = re.match(r"^([+-]?[\d.,]+)\s*([a-zA-ZÀ-ỹ%]+)$", v)
+        if m_unit:
+            num_str, unit = m_unit.group(1), m_unit.group(2).lower()
             try:
-                number = Decimal(num_str)
-                if not number.is_finite():
-                    raise QueryExecutionError(f"Non-finite numeric value for {alias!r}")
-                return number
+                if unit in ("k", "nghìn"):
+                    return Decimal(num_str.replace(",", "")) * 1000
+                if unit in ("đ", "vnd", "dong"):
+                    return Decimal(num_str.replace(".", "").replace(",", ""))
+                return Decimal(num_str.replace(",", ""))
+            except InvalidOperation:
+                pass
+        # Standard thousands comma with 3 digits: 21,000.0000 or 1,500,000
+        if re.match(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$", v):
+            try:
+                return Decimal(v.replace(",", ""))
             except InvalidOperation:
                 pass
     raise QueryExecutionError(f"Aggregation {alias!r} requires numeric values")
